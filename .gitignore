@@ -1,0 +1,25 @@
+# Build and dist
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+uv.lock
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
