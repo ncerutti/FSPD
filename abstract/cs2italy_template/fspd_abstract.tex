@@ -1,0 +1,214 @@
+\documentclass[a4paper,12pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{authblk}
+\usepackage{graphicx}
+\usepackage{mathptmx}
+\usepackage[singlespacing]{setspace}
+\usepackage[headheight=1in,margin=1in]{geometry}
+\usepackage{fancyhdr}
+\usepackage{tikz}
+\usepackage{booktabs}
+\usetikzlibrary{positioning, arrows.meta, fit, backgrounds, calc, shadows.blur}
+\renewcommand{\headrulewidth}{0pt}
+\pagestyle{fancy}
+\bibliographystyle{unsrt}
+
+\tikzset{
+  datasource/.style={
+    rounded corners, 
+    draw=blue!40, 
+    fill=blue!8,
+    minimum width=2.2cm, 
+    minimum height=0.8cm,
+    font=\sffamily\small,
+    blur shadow
+  },
+  process/.style={
+    rounded corners=4pt,
+    draw=teal!50,
+    fill=teal!10,
+    minimum width=3cm,
+    minimum height=1cm,
+    font=\sffamily\small\bfseries,
+    blur shadow
+  },
+  output/.style={
+    rounded corners,
+    draw=red!50,
+    fill=red!10,
+    minimum width=3cm,
+    minimum height=1cm,
+    font=\sffamily\small\bfseries,
+    blur shadow
+  },
+  arrow/.style={
+    -{Stealth[length=3mm]},
+    thick
+  }
+}
+
+\makeatletter
+\def\@maketitle{%
+  \newpage
+
+  \begin{center}%
+  \let \footnote \thanks
+    {\LARGE \@title \par}%
+  \end{center}%
+  \par
+  \vskip 0.1em}
+\makeatother
+
+\chead{%
+  CS2Italy – May 19-21, 2026 – Torino, Italy\\
+  %
+}
+
+\graphicspath{{images/}}
+
+\title{Automating Policy Classification: A Hybrid Machine Learning Approach for Living Databases}
+
+
+\date{}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{fancy}
+
+\begin{center}
+\author{Nicola Cerutti \footnote{Bank of England}}
+\end{center}
+
+\section*{Introduction}
+
+Social science research increasingly relies on large-scale policy databases to inform evidence-based decision-making \cite{zanti2021evidence, yang2024evidence}. However, these resources face a fundamental challenge: they are static snapshots of inherently dynamic data, which can quickly become outdated or exhibit coverage biases \cite{szomszor2022overton}. The conventional workflows often treat data curation as project-specific rather than as a generalizable methodological problem, yet classification tasks (assigning policies to categories, identifying objectives, extracting structured features from text) are fundamentally algorithmic and could be automated.
+
+The Food System Policy Database (FSPD) \cite{lowder2025}, containing approximately 15,000 policies across 192 countries, is an example of this challenge: while providing insights on global food system governance, it requires continuous manual curation with domain expertise.
+
+We present a hybrid computational approach that transforms the FSPD into a ``living database'' through automated machine learning (ML) based classification. Our two-stage architecture combines transformer-based language models for semantic text understanding with gradient boosting models for integrating structured metadata. Hybrid systems using transformer embeddings with engineered features have been shown to outperform embedding-only models \cite{tian2023best, levy2022comparison}. This design pattern can be extended to many social science datasets mixing text and tabular features, providing a template for attempting to establish sustainable data curation processes across computational social science.
+
+\section*{Data and Preliminary Results}
+
+\textbf{Data.} The FSPD aggregates policies from four source databases (FAPDA, PINE, GIfNA, Nourishing) spanning 195 countries. Each policy includes rich text (\textit{policydecision\_details}, average 603 characters) and structured metadata (country, geographic region, income group, year) alongside expert-assigned classifications: (1) \textit{segment} (11 categories: inputs, farming, trade, processing, etc.); (2) \textit{lever} (113 specific policy instruments, e.g. taxes, subsidies, bans, labelling, etc.); (3) \textit{type} (9 high-level intervention categories); and (4) three binary objectives (inclusion, environmental sustainability, dietary health). The dataset presents common challenges: severe class imbalance (246:1 ratio), multilingual text, and heterogeneous features mixing text with categorical and temporal metadata.
+\newline
+
+\noindent\textbf{Methodology.} We developed a two-stage hybrid architecture leveraging the complementary strengths of deep learning and gradient boosting (Figure \ref{fig:architecture}):
+
+\textit{Stage 1: Semantic Embedding Extraction.} We fine-tune XLM-RoBERTa-base \cite{conneau2020}, a multilingual transformer model (278M parameters), using multi-task learning with six prediction heads sharing a common encoder. To address class imbalance, we implement inverse frequency weighting (class weights proportional to 1/frequency). Critically, we extract 768-dimensional contextual embeddings from the transformer's \texttt{[CLS]} token, capturing rich semantic representations.
+
+\textit{Stage 2: Multimodal Classification with XGBoost.} The extracted embeddings will be concatenated with structured metadata features and fed into XGBoost classifiers \cite{chen2016}. This hybrid design addresses a key limitation of transformer-only approaches: while language models excel at semantic understanding, they struggle to leverage structured categorical features that carry strong predictive signal in policy data. The complete system includes confidence-based quality control, with predictions below a certain confidence (threshold: 0.7) flagged for expert review.
+
+\noindent
+\begin{figure}[htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[node distance=1.2cm and 1.5cm]
+
+% ---- DATA SOURCES ----
+\node[datasource] (fapda) {FAPDA};
+\node[datasource, right=of fapda] (pine) {PINE};
+\node[datasource, right=of pine] (gifna) {GIfNA};
+\node[datasource, right=of gifna] (dots) {...};
+\node[datasource, right=of dots] (nour) {Nourishing};
+
+% ---- PIPELINE (centered under GIfNA) ----
+\node[process, below=1.8cm of gifna] (schema) {Schema Mapping};
+\node[process, below=of schema] (embed) {XLM-RoBERTa Embeddings};
+\node[process, below=of embed] (xgb) {XGBoost Classification};
+
+% ---- OUTPUTS ----
+\node[output, below left=1.8cm and 1.2cm of xgb] (web) {Living FSPD Web Interface};
+\node[output, below right=1.8cm and 1.2cm of xgb] (mend) {Mendeley Data Repository};
+
+% ---- ARROWS (with small caps labels) ----
+\draw[arrow] (fapda.south) -- node[pos=0.55, left, font=\scriptsize\scshape] {} (schema.north);
+\draw[arrow] (pine.south)  -- node[pos=0.55, left, font=\scriptsize\scshape] {} (schema.north);
+\draw[arrow] (gifna.south) -- node[pos=0.45, right, font=\footnotesize\scshape] {extract} (schema.north);
+\draw[arrow] (dots.south)  -- node[pos=0.55, right, font=\scriptsize\scshape] {} (schema.north);
+\draw[arrow] (nour.south)  -- node[pos=0.55, right, font=\scriptsize\scshape] {} (schema.north);
+
+\draw[arrow] (schema) -- node[right, font=\footnotesize\scshape] {transform} (embed);
+\draw[arrow] (embed)  -- node[right, font=\footnotesize\scshape] {encode} (xgb);
+
+\draw[arrow] (xgb) -- node[pos=0.45, left, font=\footnotesize\scshape] {publish} (web);
+\draw[arrow] (xgb) -- node[pos=0.45, right, font=\footnotesize\scshape] {archive} (mend);
+
+% ---- PANELS (background) ----
+\begin{scope}[on background layer]
+  % Data Sources panel
+  \coordinate (srcNW) at ($(fapda.north west)+(-8pt, 22pt)$);
+  \coordinate (srcSE) at ($(nour.south east)+(8pt,-10pt)$);
+  \path[fill=blue!6, draw=black!15, rounded corners=8pt, line width=0.8pt]
+    (srcNW) rectangle (srcSE);
+
+  % Pipeline panel (wider to span more horizontally)
+  \coordinate (pipeNW) at ($(schema.north west)+(-65pt, 22pt)$);
+  \coordinate (pipeSE) at ($(xgb.south east)+(65pt,-10pt)$);
+  \path[fill=teal!6, draw=black!15, rounded corners=8pt, line width=0.8pt]
+    (pipeNW) rectangle (pipeSE);
+
+  % Outputs panel
+  \coordinate (outNW) at ($(web.north west)+(-20pt, 22pt)$);
+  \coordinate (outSE) at ($(mend.south east)+(10pt,-10pt)$);
+  \path[fill=red!6, draw=black!15, rounded corners=8pt, line width=0.8pt]
+    (outNW) rectangle (outSE);
+\end{scope}
+
+% ---- PANEL TITLES ----
+\node[font=\sffamily\bfseries\small, anchor=north]
+  at ($(srcNW)+(6pt,-6pt)$) {Data Sources};
+
+\node[font=\sffamily\bfseries\small, anchor=north]
+  at ($(pipeNW)+(6pt,-6pt)$) {Pipeline};
+
+\node[font=\sffamily\bfseries\small, anchor=north]
+  at ($(outNW)+(6pt,-6pt)$) {Outputs};
+
+\end{tikzpicture}
+}
+\caption{Two-stage hybrid architecture for automated policy classification. Policy data from multiple sources (FAPDA, PINE, GIfNA, Nourishing) undergoes schema mapping, is encoded via XLM-RoBERTa, classified via XGBoost (segment, lever, type, objectives). It is then published to the living database and data repository with confidence scores.}
+\label{fig:architecture}
+\end{figure}
+
+\noindent\textbf{Preliminary Results.} The multi-task transformer (Stage 1) achieved strong baseline performance on text-only classification (See Table \ref{tab:XLM-RoBERTa}). Multilingual evaluation confirmed robust performance across Spanish, French, and English texts without requiring translation. These results suggest ML-aided classification can be viable for this domain and they provide a baseline against which to measure improvements from incorporating structured metadata.
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{c|cc}
+        \toprule
+         Task & Accuracy (\%) & F1 Score (\%) \\
+         \midrule
+         \multicolumn{3}{c}{\textit{Multi-class Classification}} \\
+         \midrule
+         Segment & 83.3 & 83.9 \\
+         Lever & 63.6 & 63.7 \\
+         Type & 86.4 & 87.0 \\
+         \midrule
+         \multicolumn{3}{c}{\textit{Binary Objectives}} \\
+         \midrule
+         Inclusion & 85.8 & 65.4 \\
+         Environmental Target & 95.9 & 82.8 \\
+         Dietary Health & 84.3 & 70.9 \\
+         \bottomrule
+    \end{tabular}
+    \caption{XLM-RoBERTa baseline performance (text-only classification). Lower F1 scores for binary objectives reflect class imbalance in the training data.}
+    \label{tab:XLM-RoBERTa}
+\end{table}
+
+\section*{Discussion and Next Steps}
+
+This work identifies a pathway for transforming expert-curated databases from static snapshots into (mostly) automatically maintained resources. The two-stage hybrid architecture is deliberately domain-agnostic: while applied here to food policy, the same pattern can be adapted to any social science corpus combining rich text with structured metadata. \newline
+
+\noindent\textbf{Next Steps.} We will complete Stage 2 by integrating structured metadata (country, region, income group, year, source database) via XGBoost classifiers. We anticipate improvements across classification tasks, particularly where geographic and temporal context carries predictive power. Cross-database generalization tests will validate that models learn genuine policy semantics rather than database-specific artifacts. The pipeline will be deployed with monthly automated updates ingesting new policies from source databases. At first, predictions will be routed to domain experts to validate the outputs.
+
+From a food policy perspective, a living FSPD will enable new longitudinal analyses: tracking policy diffusion across countries, measuring responses to shocks (pandemics, climate events, price crises), and identifying emerging trends in near-real-time. The original FSPD, for example, revealed that most food policies target producers and consumers while under-regulating the middle of the value chain \cite{lowder2025}; automated updates might reveal whether this pattern shifts as governments implement new policies.
+
+By releasing the classification pipeline as open-source tooling, we aim at providing the scientific community with reusable infrastructure for automating data curation workflows, reducing barriers to longitudinal and real-time analysis of policy, legislative, and governance data across domains.
+
+\bibliography{refs}
+
+
+\end{document}
+
