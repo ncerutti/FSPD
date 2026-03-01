@@ -1,0 +1,76 @@
+\documentclass[a4paper,12pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{authblk}
+\usepackage{graphicx}
+\usepackage{mathptmx}
+\usepackage[singlespacing]{setspace}
+\usepackage[headheight=1in,margin=1in]{geometry}
+\usepackage{fancyhdr}
+
+
+\renewcommand{\headrulewidth}{0pt}
+\pagestyle{fancy}
+
+
+\makeatletter
+\def\@maketitle{%
+  \newpage
+
+  \begin{center}%
+  \let \footnote \thanks
+    {\LARGE \@title \par}%
+  \end{center}%
+  \par
+  \vskip 0.1em}
+\makeatother
+
+\chead{%
+  CS2Italy – May 19-21, 2026 – Torino, Italy\\
+  %
+}
+
+\graphicspath{{images/}}
+
+\title{Title}
+
+ 
+\date{}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{fancy}
+
+\begin{center}
+Author names and affiliations
+\end{center}
+
+Insert your extended abstract here.
+
+% ===== Guidelines - remove these before submission =====
+\vskip 40pt
+\underline {Guidelines (Remove these guidelines before submission):}
+\begin{itemize}
+\itemsep0pt
+  \item Include title, author names and affiliations, the abstract text, followed by references and tables/figures
+  \item 2 pages maximum (excluding references, figures and tables)
+  \item Single spaced
+  \item Font size 12pt
+  \item 1-inch margins
+\end{itemize}
+% ===== Guidelines end =====
+
+
+\section*{References}
+
+\newpage
+
+\begin{figure}[htp]
+\centering
+\includegraphics[width=0.6\textwidth]{fig.png}
+\caption{Example figure. If you are not using figures, remove it.}
+\label{fig:image}
+\end{figure}
+
+\end{document}

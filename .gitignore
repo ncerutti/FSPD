@@ -23,3 +23,22 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# Model outputs
+outputs/models/checkpoints/
+outputs/plots/*.png
+best_model.pt
+
+# Data
+data/FSPD_ml_ready.csv
+data/*_predictions.csv
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints/
+
+# Temporary files
+/tmp/
+*.log
+
+

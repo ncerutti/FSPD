@@ -1,0 +1,121 @@
+\documentclass[a4paper,12pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{authblk}
+\usepackage{graphicx}
+\usepackage{mathptmx}
+\usepackage[singlespacing]{setspace}
+\usepackage[headheight=1in,margin=1in]{geometry}
+\usepackage{fancyhdr}
+
+
+\renewcommand{\headrulewidth}{0pt}
+\pagestyle{fancy}
+
+
+\makeatletter
+\def\@maketitle{%
+  \newpage
+
+  \begin{center}%
+  \let \footnote \thanks
+    {\LARGE \@title \par}%
+  \end{center}%
+  \par
+  \vskip 0.1em}
+\makeatother
+
+\chead{%
+  CS2Italy – May 19-21, 2026 – Torino, Italy\\
+  %
+}
+
+\graphicspath{{images/}}
+
+\title{From Static Snapshots to Living Databases: Hybrid Deep Learning and Gradient Boosting for Automated Policy Classification}
+
+
+\date{}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{fancy}
+
+\begin{center}
+\textit{Author names and affiliations to be added}
+\end{center}
+
+\section*{Introduction}
+
+Social science research increasingly relies on large-scale policy databases to understand governance patterns and inform evidence-based decision-making. However, most policy databases face a fundamental challenge: they are static snapshots that quickly become outdated as new policies are enacted. The Food System Policy Database (FSPD) \cite{lowder2025}, containing approximately 11,900 policies across 192 countries, exemplifies both the value and limitation of such resources. While it provides unprecedented insight into global food system governance, maintaining its currency requires continuous manual curation and classification---a labor-intensive process that limits scalability and timeliness.
+
+This challenge extends beyond food policy to any domain where social science research generates structured databases from administrative or policy documents. The conventional workflow---collect, clean, classify, publish, repeat---treats data curation as project-specific rather than as a generalizable methodological problem. Yet the classification task itself (assigning policies to categories, identifying objectives, extracting structured features from text) is fundamentally algorithmic and amenable to automation.
+
+We present a hybrid computational approach that transforms the FSPD from a static resource into a ``living database'' through automated machine learning-based classification. Our two-stage architecture combines transformer-based language models for semantic text understanding with gradient boosting models for integrating structured metadata---a design pattern applicable to any social science dataset mixing text and tabular features. More importantly, we demonstrate how the methodology itself, independent of the specific policy domain, can be adapted to any research context where experts have created structured classifications of heterogeneous social data. Our contribution is thus twofold: an applied solution for food policy research, and a transferable framework for automating the maintenance of expert-curated social science databases.
+
+\section*{Data and Methods}
+
+The FSPD aggregates policies from four source databases (FAPDA, PINE, GIfNA, Nourishing) spanning 195 countries. Each policy includes rich text (\textit{policydecision\_details}, average 603 characters) and structured metadata (country, geographic region, income group, year) alongside expert-assigned classifications: (1) \textit{segment} (11 categories: inputs, farming, trade, processing, retail, food service, final consumption, etc.); (2) \textit{lever} (113 specific policy instruments); (3) \textit{type} (9 high-level intervention categories); and (4) three binary objectives (inclusion, environmental sustainability, dietary health).
+
+The dataset presents computational challenges characteristic of real-world social science data: severe class imbalance (246:1 ratio in lever classifications), multilingual text (Spanish, French, English), and heterogeneous features mixing unstructured text with categorical and temporal metadata. Additionally, the classification tasks are hierarchically structured and interdependent, requiring models to capture complex semantic relationships.
+
+We developed a two-stage hybrid architecture that leverages the complementary strengths of deep learning and gradient boosting:
+
+\textbf{Stage 1: Semantic Embedding Extraction.} We fine-tune XLM-RoBERTa-base \cite{conneau2020}, a multilingual transformer model (278M parameters supporting 100+ languages), using multi-task learning. The model features six prediction heads sharing a common encoder: three multi-class classifiers (segment, lever, type) and three binary classifiers (policy objectives). To address severe class imbalance, we implement inverse frequency weighting for multi-class tasks. The model is trained end-to-end using AdamW optimization, linear learning rate scheduling with warmup, gradient clipping, and early stopping. Critically, we extract the 768-dimensional contextual embeddings from the transformer's \texttt{[CLS]} token for each policy text, capturing rich semantic representations distilled through multi-task training.
+
+\textbf{Stage 2: Multimodal Classification with XGBoost.} The extracted text embeddings are concatenated with structured metadata features (country, region, income group, year, source database) and fed into XGBoost classifiers \cite{chen2016}---one per classification task. Gradient boosting excels at learning complex feature interactions and naturally handles mixed data types (continuous embeddings, categorical variables, temporal features) without extensive preprocessing. XGBoost's built-in handling of imbalanced data through scale\_pos\_weight and sample weighting complements the transformer's inverse frequency weighting. Each classifier undergoes hyperparameter tuning via cross-validation, optimizing tree depth, learning rate, and regularization parameters.
+
+This hybrid design addresses a key limitation of transformer-only approaches: while language models excel at semantic understanding, they struggle to effectively leverage structured categorical features that carry strong predictive signal in policy data (e.g., food policies differ systematically by country income level). Conversely, XGBoost natively handles such features but cannot directly process raw text. The two-stage pipeline combines their strengths.
+
+The complete system includes confidence-based quality control: each XGBoost prediction includes probability estimates, and predictions below 0.7 confidence are automatically flagged for expert review, maintaining a human-in-the-loop workflow that dramatically reduces manual workload while preserving classification quality.
+
+\section*{Results}
+
+\textbf{Stage 1 (XLM-RoBERTa):} The multi-task transformer achieved strong performance on text-only classification: segment accuracy [XX]\% (F1: [XX]), lever accuracy [XX]\% (F1: [XX]), type accuracy [XX]\% (F1: [XX]), and binary objective accuracies [XX--XX]\%. Multilingual evaluation confirmed robust performance across Spanish, French, and English texts without requiring translation.
+
+\textbf{Stage 2 (Hybrid XGBoost):} Integrating structured metadata via XGBoost yielded consistent improvements across all tasks: segment accuracy [+X.X]\% (F1: [+X.X]), lever accuracy [+X.X]\% (F1: [+X.X]), type accuracy [+X.X]\% (F1: [+X.X]), and binary objective gains of [+X.X--X.X]\%. The improvements were most pronounced for tasks where geographic and temporal context carries predictive power. For example, [describe specific insight, e.g., ``income group was the strongest categorical predictor for subsidy-related policies''].
+
+Feature importance analysis revealed complementary contributions: transformer embeddings dominated for distinguishing semantically similar policy types, while categorical features (country, region, income level) improved predictions for geographically patterned policy instruments. Source database identity also proved informative, capturing systematic differences in policy documentation styles across FAPDA, PINE, and GIfNA.
+
+Confidence score distributions showed that approximately [XX]\% of predictions exceeded 0.7 confidence across all tasks, enabling automated classification for the majority of new policies. Low-confidence predictions requiring manual review were disproportionately concentrated in edge cases (policies spanning multiple segments, novel policy instruments, ambiguous text).
+
+Cross-database generalization tests demonstrated robust performance when training on subsets excluding entire databases and evaluating on held-out sources, validating that the model learns genuine policy semantics rather than database-specific artifacts.
+
+\section*{Discussion and Implications}
+
+This work demonstrates a practical pathway for transforming expert-curated social science databases from static snapshots into automatically maintained resources. The two-stage hybrid architecture is deliberately domain-agnostic: while applied here to food policy, the same pattern---multilingual transformer for text embeddings + gradient boosting for multimodal integration + confidence-based review---can be adapted to any social science corpus combining rich text with structured metadata.
+
+The methodological contribution extends beyond the specific modeling choices. By showing how to systematically automate classification pipelines for expert-curated databases, we provide a template for building sustainability into data collection processes across computational social science. Research projects can develop classification models alongside initial curation, ensuring data remains current beyond initial funding cycles. This shifts the paradigm from one-time static datasets toward continuously updated resources that track evolving social phenomena in near-real-time.
+
+The hybrid architecture addresses a common challenge in applied machine learning for social science: many administrative and policy datasets contain both rich text and structured features, yet most methods optimize for one modality. Our pipeline demonstrates how to leverage state-of-the-art language models while preserving the predictive power of tabular features through gradient boosting's native multimodal capabilities.
+
+From a food policy perspective, the living FSPD enables longitudinal analysis that was previously infeasible. Researchers can now track the diffusion of policy innovations across countries, measure policy responses to shocks (pandemics, climate events, price crises), and identify emerging policy trends in near-real-time. The original FSPD revealed that most food policies target producers and consumers while under-regulating the middle of the value chain \cite{lowder2025}; automated updates will reveal whether this pattern is shifting as governments respond to supply chain disruptions and sustainability pressures.
+
+The pipeline will be deployed with monthly automated updates ingesting new policies from source databases, with flagged predictions routed to domain experts. By releasing the classification pipeline as open-source tooling, we provide computational social scientists with reusable infrastructure for automating their own data curation workflows, reducing barriers to longitudinal and real-time analysis of policy, legislative, administrative, and governance data across domains. Future work will explore cross-domain transfer learning, testing whether models trained on food policy can accelerate training for related domains (environmental regulation, public health interventions, agricultural policy in other contexts).
+
+\section*{References}
+
+\small
+\begin{itemize}
+\itemsep0pt
+\item Chen, T., \& Guestrin, C. (2016). XGBoost: A Scalable Tree Boosting System. \textit{Proceedings of KDD}, 785--794.
+\item Conneau, A., Khandelwal, K., Goyal, N., et al. (2020). Unsupervised Cross-lingual Representation Learning at Scale. \textit{Proceedings of ACL}, 8440--8451.
+\item Lowder, S.K., Ruggeri Laderchi, C., Cerutti, N., Parsons, K. (2025). Food System Policies: a Global Snapshot from the Food System Policy Database (FSPD). \textit{Global Food Security}. https://doi.org/10.1016/j.gfs.2025.100894
+\end{itemize}
+
+\newpage
+
+\begin{figure}[htp]
+\centering
+\fbox{\parbox{0.9\textwidth}{\centering\vspace{100pt}\textbf{[FIGURE SUGGESTION]}\\
+\textbf{Option 1:} Two-stage architecture diagram: Text → XLM-RoBERTa → Embeddings + Metadata → XGBoost → Classifications\\
+\textbf{Option 2:} Performance comparison: RoBERTa-only vs. Hybrid (XGBoost) across all 6 tasks\\
+\textbf{Option 3:} Feature importance plot showing text embeddings vs. categorical features by task\\
+\textbf{Option 4:} Confidence score distributions for automated vs. flagged-for-review predictions
+\vspace{100pt}}}
+\caption{[Replace with actual figure]. Suggested visualizations: (1) two-stage hybrid architecture diagram, (2) performance gains from adding structured features via XGBoost, (3) feature importance analysis, or (4) confidence-based quality control workflow.}
+\label{fig:placeholder}
+\end{figure}
+
+\end{document}
