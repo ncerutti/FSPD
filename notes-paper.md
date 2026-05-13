@@ -42,11 +42,24 @@ Automated ML system to transform static FSPD into continuously updated database 
 - Retraining frequency?
 
 ## Timeline
-- Done: Project setup, EDA, model architecture (XLM-RoBERTa multi-task)
-- Next: Model training and evaluation
-- Then: Pipeline development, API, web interface, automation
+- Done: Project setup, EDA, model architecture, Stage 1 training, Stage 2 training
+- Next: Pipeline development (ingestion, schema mapping, deduplication, API, automation)
+- Then: Web interface, Mendeley Data release, paper submission
 
 ---
+
+## Results Summary (Stage 1 vs Stage 2)
+
+| Task | S1 Acc | S1 F1 | S2 Acc | S2 F1 | ΔF1 |
+|---|---|---|---|---|---|
+| Segment | 83.3 | 83.9 | 86.5 | 86.5 | +2.6 |
+| Lever | 63.6 | 63.7 | 66.0 | 66.2 | +2.5 |
+| Type | 86.4 | 87.0 | 90.4 | 90.4 | +3.4 |
+| Inclusion | 85.8 | 65.4 | 87.1 | 71.4 | +6.0 |
+| EnviTarget | 95.9 | 82.8 | 95.7 | 82.4 | −0.4 |
+| DietHealth | 84.3 | 70.9 | 84.9 | 73.8 | +2.8 |
+
+Feature importance: ~99% embeddings across all tasks — categorical metadata (region, income group, db, country) contributes marginally, suggesting policy text already encodes geographic/institutional context.
 
 ## Log
 

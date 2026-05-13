@@ -8,8 +8,9 @@ import pandas as pd
 import torch
 from transformers import AutoTokenizer
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import OrdinalEncoder
+from sklearn.preprocessing import OrdinalEncoder, LabelEncoder
 from sklearn.metrics import accuracy_score, f1_score
+import joblib
 import xgboost as xgb
 from tqdm.auto import tqdm
 
@@ -87,39 +88,54 @@ def encode_categoricals(train_df, val_df, test_df):
     )
 
 
-def get_labels(df, task, label_encoders):
+def get_labels(df, task, fresh_encoders):
     col_map = {'segment': 'segment', 'lever': 'lever', 'type': 'itype'}
-    enc_map = {'segment': 'segment_encoder', 'lever': 'lever_encoder', 'type': 'type_encoder'}
     if task in MULTICLASS_TASKS:
-        return label_encoders[enc_map[task]].transform(df[col_map[task]])
+        return fresh_encoders[task].transform(df[col_map[task]])
     return df[task].values
 
 
+def make_fresh_encoders(train_df):
+    """Fit new LabelEncoders on training data to avoid sklearn version issues with pickled encoders."""
+    col_map = {'segment': 'segment', 'lever': 'lever', 'type': 'itype'}
+    encoders = {}
+    for task, col in col_map.items():
+        le = LabelEncoder()
+        le.fit(train_df[col])
+        encoders[task] = le
+        print(f"  {task}: {len(le.classes_)} classes → {list(le.classes_)}")
+    return encoders
+
+
 def train_classifier(X_train, y_train, X_val, y_val, task):
-    """Train a single XGBoost classifier with early stopping."""
-    common = dict(
+    """Train a single XGBoost classifier."""
+    base = dict(
         n_estimators=500, max_depth=6, learning_rate=0.05,
-        subsample=0.8, colsample_bytree=0.8, random_state=42,
-        verbosity=0, early_stopping_rounds=30,
+        subsample=0.8, colsample_bytree=0.8, random_state=42, verbosity=0,
     )
     if task in BINARY_TASKS:
         pos = y_train.sum()
         clf = xgb.XGBClassifier(
             objective='binary:logistic', eval_metric='logloss',
             scale_pos_weight=(len(y_train) - pos) / max(pos, 1),
-            **common
+            early_stopping_rounds=30, **base
         )
+        clf.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
     else:
         classes, counts = np.unique(y_train, return_counts=True)
         freq = dict(zip(classes, counts))
         sample_weights = np.array([1.0 / freq[y] for y in y_train])
+        sample_weights /= sample_weights.mean()  # normalize to mean=1 so hessians stay in range for min_child_weight
         clf = xgb.XGBClassifier(
-            objective='multi:softmax', eval_metric='mlogloss', **common
+            objective='multi:softmax', eval_metric='mlogloss',
+            num_class=len(classes), **base
         )
-        clf.fit(X_train, y_train, sample_weight=sample_weights,
-                eval_set=[(X_val, y_val)], verbose=False)
-        return clf
-    clf.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+        # No early stopping for multiclass: extreme sample weights cause val loss
+        # to spike in early rounds, triggering premature stopping at best_iteration=0.
+        clf.fit(X_train, y_train, sample_weight=sample_weights, verbose=False)
+    n_rounds = clf.get_booster().num_boosted_rounds()
+    best_iter = getattr(clf, 'best_iteration', 'N/A')
+    print(f"  Rounds trained: {n_rounds}, best_iteration: {best_iter}")
     return clf
 
 
@@ -147,9 +163,11 @@ def feature_importance_summary(clf, task):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_path',
-                        default='/kaggle/input/fspd-stage1/models/best_model.pt' if IS_KAGGLE
+                        default='/kaggle/input/models/ncerutti/fspd-original-xml-roberta/pytorch/default/1/models/best_model.pt' if IS_KAGGLE
                                 else 'outputs/models/best_model.pt',
                         help='Path to Stage 1 best_model.pt (on Kaggle: verify the dataset slug)')
+    parser.add_argument('--data_path', default=None,
+                        help='Override data CSV path')
     parser.add_argument('--output_dir',
                         default='/kaggle/working' if IS_KAGGLE else 'outputs/models')
     parser.add_argument('--batch_size', type=int,
@@ -159,7 +177,9 @@ def main():
     args = parser.parse_args()
 
     config = DataConfig()
-    if IS_KAGGLE:
+    if args.data_path:
+        config.data_path = args.data_path
+    elif IS_KAGGLE:
         config.data_path = '/kaggle/input/fspd/FSPD.csv'
     model_config = ModelConfig()
 
@@ -197,6 +217,10 @@ def main():
             roberta, texts, tokenizer, model_config.max_length, device, args.batch_size
         )
 
+    # --- Fresh label encoders (avoid sklearn version mismatch with pickled encoders) ---
+    print("\nFitting fresh label encoders on training data:")
+    fresh_encoders = make_fresh_encoders(train_df)
+
     # --- Categorical features ---
     X_cat_train, X_cat_val, X_cat_test, _ = encode_categoricals(train_df, val_df, test_df)
     X = {
@@ -210,10 +234,12 @@ def main():
     # --- Train & evaluate ---
     results = {}
     importances = {}
+    classifiers = {}
     for task in MULTICLASS_TASKS + BINARY_TASKS:
         print(f"\n[{task}] Training XGBoost...")
-        y = {s: get_labels(splits[s], task, label_encoders) for s in ['train', 'val', 'test']}
+        y = {s: get_labels(splits[s], task, fresh_encoders) for s in ['train', 'val', 'test']}
         clf = train_classifier(X['train'], y['train'], X['val'], y['val'], task)
+        classifiers[task] = clf
         results[task] = evaluate(clf, X['test'], y['test'], task)
         importances[task] = feature_importance_summary(clf, task)
         s1, s2 = STAGE1_METRICS[task], results[task]
@@ -224,7 +250,16 @@ def main():
     out_path = os.path.join(args.output_dir, 'stage2_metrics.json')
     with open(out_path, 'w') as f:
         json.dump({'stage2': results, 'stage1': STAGE1_METRICS, 'importance': importances}, f, indent=2)
-    print(f"\nSaved to {out_path}")
+    print(f"\nSaved metrics to {out_path}")
+
+    models_dir = os.path.join(args.output_dir, 'stage2_models')
+    os.makedirs(models_dir, exist_ok=True)
+    for task, clf in classifiers.items():
+        model_path = os.path.join(models_dir, f'{task}.joblib')
+        joblib.dump(clf, model_path)
+    encoders_path = os.path.join(models_dir, 'label_encoders.joblib')
+    joblib.dump(fresh_encoders, encoders_path)
+    print(f"Saved models to {models_dir}/")
 
     # --- Comparison table ---
     print("\n=== Stage 1 vs Stage 2 ===")

@@ -51,43 +51,37 @@ FSPD/
 
 ### 4. XLM-RoBERTa Training (DONE)
 - **Local test**: Successfully ran on CPU (verified pipeline works)
-- **Kaggle training**: Completed on GPU
+- **Kaggle training**: Completed on GPU (T4)
 - **Model artifacts**:
-  - `outputs/models/best_model.pt` - Trained model + label encoders + config
-  - `outputs/models/test_metrics.json` - Performance metrics on held-out test set
-- **Performance**: [User has metrics from training - to be filled in when implementing XGBoost]
+  - `outputs/models/best_model.pt` - Trained model + label encoders + config (3.5GB, also on Kaggle)
+  - `outputs/models/test_metrics.json` - Stage 1 metrics
 
-### 5. Conference Abstract (DONE)
+### 5. XGBoost Hybrid (DONE)
+- **Script**: `src/models/stage2.py` — run on Kaggle T4
+- **Approach**: Frozen RoBERTa CLS embeddings (768-dim) + 4 categorical features → XGBoost per task
+- **Model artifacts**:
+  - `outputs/models/stage2_metrics.json` - Stage 1 vs Stage 2 comparison + feature importance
+  - `outputs/models/stage2_models/` - Saved XGBoost classifiers (joblib) + label encoders
+- **Key finding**: ~99% of predictive gain comes from embeddings; categorical metadata contributes marginally
+- **Results** (F1): Segment 86.5, Lever 66.2, Type 90.4, Inclusion 71.4, EnviTarget 82.4, DietHealth 73.8
+
+### 6. Conference Abstract (DONE)
 - **Conference**: CS2Italy2026 (May 19-21, 2026, Torino)
 - **Submission type**: Extended abstract (2 pages max, non-archival)
-- **Location**: `abstract/cs2italy_template/`
-  - `fspd_abstract_v1.tex`: RoBERTa-only, mentions XGBoost as future work
-  - `fspd_abstract_v2.tex`: Two-stage hybrid (RoBERTa→XGBoost) presented as implemented
+- **Location**: `abstract/cs2italy_template/fspd_abstract.tex`
+- **Status**: Updated with full Stage 1 + Stage 2 results table; methodology in past tense
 - **Key framing**: Methodology is transferable to any expert-curated social science database with text+metadata
-- **Focus**: Balanced method + application, emphasizing the classification pipeline itself as a contribution
 
-## Current Status of Two-Stage Approach
-- **Stage 1 (RoBERTa)**: DONE - Text-only classification with multi-task learning
-- **Stage 2 (XGBoost)**: TODO - Integrate embeddings + categorical features (country, region, income_group, year, source DB)
+## Current Status
+- **Stage 1 (RoBERTa)**: DONE
+- **Stage 2 (XGBoost)**: DONE
+- **Abstract**: DONE — results filled in, ready to submit
 
 **Planned architecture**: Extract 768-dim CLS embeddings from trained RoBERTa → concatenate with categorical features → train XGBoost classifiers (one per task) → compare performance gains vs text-only baseline.
 
-## Current Limitations (Stage 1 only)
-1. **Text-only**: RoBERTa uses `policydecision_details` only, doesn't leverage categorical features that likely carry predictive signal
-2. **Source imbalance**: Not stratifying by source database in train/val/test splits
-3. **Binary objectives**: Standard BCE loss, no special handling for imbalance (23%, 20%, 35% positive rates)
-
 ## What's Next
 
-### Immediate: Implement Stage 2 (XGBoost)
-1. **Extract embeddings**: Modify predict.py to output 768-dim CLS embeddings for all samples
-2. **Prepare features**: Concatenate embeddings + categorical features (country, region, income_group, year, db)
-3. **Train XGBoost**: One classifier per task (6 total), handle class imbalance with scale_pos_weight
-4. **Evaluate gains**: Compare Stage 2 performance vs Stage 1 baseline
-5. **Feature importance**: Analyze which features (text vs categorical) drive predictions per task
-6. **Update abstract**: Fill in performance numbers in v2 abstract for CS2Italy2026 submission
-
-### Then: Production Pipeline
+### Production Pipeline
 1. **Data ingestion** - FAPDA, GIFNA and PINE fetchers implemented (`fetch_*_data.py`)
 2. **Schema mapping** - Transform source DB schemas to FSPD format
 3. **Deduplication** - Detect duplicate policies across sources
@@ -163,8 +157,7 @@ Upload `kaggle_training.ipynb` to Kaggle with GPU enabled.
 - Conference abstract drafted for CS2Italy2026 (submission deadline TBD)
 
 ## Next Session Priorities
-1. Implement Stage 2 (XGBoost) to integrate categorical features
-2. Evaluate performance gains from two-stage approach
-3. Generate feature importance analysis (which features drive which tasks)
-4. Fill in performance numbers in abstract v2 for conference submission
-5. Consider whether to submit v1 (RoBERTa-only) or v2 (hybrid) depending on XGBoost results
+1. Submit abstract to CS2Italy2026 (check submission deadline)
+2. Build production pipeline: ingestion → schema mapping → deduplication → API
+3. Deploy with monthly GitHub Actions automation
+4. Domain expert validation of initial predictions

@@ -1,4 +1,6 @@
 # Stage 2 on Kaggle — 1 March 2026
+> **COMPLETED** (6 April 2026). Results: Segment F1=0.865, Lever F1=0.662, Type F1=0.904, Inclusion F1=0.714, EnviTarget F1=0.824, DietHealth F1=0.738. Stage 2 improved on 5/6 tasks. Models saved to `outputs/models/stage2_models/`. Metrics in `outputs/models/stage2_metrics.json`.
+
 
 This notebook runs Stage 2 of the FSPD automated classification pipeline.
 Stage 1 (already complete) fine-tuned XLM-RoBERTa-base on ~12,500 food policies using multi-task learning across 6 targets: segment (11 classes), lever (113 classes), type (9 classes), and three binary objectives (inclusion, envitarget, diethealth).

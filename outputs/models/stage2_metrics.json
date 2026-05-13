@@ -1,0 +1,110 @@
+{
+  "stage2": {
+    "segment": {
+      "acc": 0.8654,
+      "f1": 0.8648
+    },
+    "lever": {
+      "acc": 0.6601,
+      "f1": 0.6619
+    },
+    "type": {
+      "acc": 0.9042,
+      "f1": 0.9038
+    },
+    "inclusion": {
+      "acc": 0.8714,
+      "f1": 0.714
+    },
+    "envitarget": {
+      "acc": 0.9569,
+      "f1": 0.8239
+    },
+    "diethealth": {
+      "acc": 0.849,
+      "f1": 0.7376
+    }
+  },
+  "stage1": {
+    "segment": {
+      "acc": 0.8326,
+      "f1": 0.8387
+    },
+    "lever": {
+      "acc": 0.6359,
+      "f1": 0.6374
+    },
+    "type": {
+      "acc": 0.8637,
+      "f1": 0.8702
+    },
+    "inclusion": {
+      "acc": 0.8576,
+      "f1": 0.6541
+    },
+    "envitarget": {
+      "acc": 0.9594,
+      "f1": 0.8278
+    },
+    "diethealth": {
+      "acc": 0.843,
+      "f1": 0.7093
+    }
+  },
+  "importance": {
+    "segment": {
+      "embedding_pct": 100.0,
+      "categorical": {
+        "region_wb": 0.0,
+        "income_group": 0.0,
+        "db": 0.0,
+        "country": 0.0
+      }
+    },
+    "lever": {
+      "embedding_pct": 99.1,
+      "categorical": {
+        "region_wb": 0.0,
+        "income_group": 0.0,
+        "db": 0.8,
+        "country": 0.0
+      }
+    },
+    "type": {
+      "embedding_pct": 99.8,
+      "categorical": {
+        "region_wb": 0.0,
+        "income_group": 0.0,
+        "db": 0.0,
+        "country": 0.1
+      }
+    },
+    "inclusion": {
+      "embedding_pct": 99.2,
+      "categorical": {
+        "region_wb": 0.4,
+        "income_group": 0.3,
+        "db": 0.0,
+        "country": 0.1
+      }
+    },
+    "envitarget": {
+      "embedding_pct": 99.7,
+      "categorical": {
+        "region_wb": 0.1,
+        "income_group": 0.1,
+        "db": 0.0,
+        "country": 0.1
+      }
+    },
+    "diethealth": {
+      "embedding_pct": 99.8,
+      "categorical": {
+        "region_wb": 0.1,
+        "income_group": 0.1,
+        "db": 0.0,
+        "country": 0.1
+      }
+    }
+  }
+}
