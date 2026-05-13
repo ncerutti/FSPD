@@ -32,6 +32,11 @@ FSPD/
 │   ├── model.py                     # Multi-task transformer model
 │   ├── train.py                     # Training script
 │   └── predict.py                   # Inference script
+├── src/pipeline/                    # ETL code
+│   └── fapda_etl.py                 # FAPDA extraction script (API-backed)
+├── fetch_fapda_data.py              # Quick start ETL runner
+├── fetch_gifna_data.py              # Quick start GIFNA ETL runner
+├── fetch_pine_data.py               # Quick start PINE ETL runner
 ├── train_model.py                   # Quick start training
 ├── test_training.py                 # Test pipeline works
 ├── predict_policies.py              # Quick start prediction
@@ -83,7 +88,7 @@ FSPD/
 6. **Update abstract**: Fill in performance numbers in v2 abstract for CS2Italy2026 submission
 
 ### Then: Production Pipeline
-1. **Data ingestion** - Fetch new policies from FAPDA, PINE, GIfNA
+1. **Data ingestion** - FAPDA, GIFNA and PINE fetchers implemented (`fetch_*_data.py`)
 2. **Schema mapping** - Transform source DB schemas to FSPD format
 3. **Deduplication** - Detect duplicate policies across sources
 4. **Database** - Storage for versioned data
@@ -115,6 +120,21 @@ python predict_policies.py \
   --model_path outputs/models/best_model.pt \
   --input data/new_policies.csv \
   --output predictions.csv
+```
+
+### Fetch FAPDA data
+```bash
+python fetch_fapda_data.py --resource both --output_dir data/raw/fapda
+```
+
+### Fetch GIFNA data
+```bash
+python fetch_gifna_data.py --output_dir data/raw/gifna
+```
+
+### Fetch PINE data
+```bash
+python fetch_pine_data.py --output_dir data/raw/pine
 ```
 
 ### Kaggle training

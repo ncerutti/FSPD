@@ -30,6 +30,10 @@ The ML models predict:
 ```
 FSPD/
 ├── data/                      # Raw and processed data
+├── fetch_all_data.py          # Run all ETL fetchers into data/
+├── fetch_fapda_data.py        # ETL entrypoint for FAPDA ingestion
+├── fetch_gifna_data.py        # ETL entrypoint for GIFNA public assets
+├── fetch_pine_data.py         # ETL entrypoint for PINE (OECD SDMX)
 ├── src/
 │   ├── models/               # ML model definitions and training
 │   ├── pipeline/             # Data ingestion and transformation
@@ -70,6 +74,26 @@ python predict_policies.py \
   --model_path outputs/models/best_model.pt \
   --input data/new_policies.csv \
   --output predictions.csv
+```
+
+### Fetch FAPDA Data (ETL)
+```bash
+python fetch_fapda_data.py --resource both --output_dir data/raw/fapda
+```
+
+### Fetch All Sources (ETL)
+```bash
+python fetch_all_data.py
+```
+
+### Fetch GIFNA Data (ETL)
+```bash
+python fetch_gifna_data.py --output_dir data/raw/gifna
+```
+
+### Fetch PINE Data (ETL)
+```bash
+python fetch_pine_data.py --output_dir data/raw/pine
 ```
 
 ### Run Analysis
