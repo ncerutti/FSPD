@@ -1,0 +1,221 @@
+name: Weekly data update
+
+on:
+  schedule:
+    # Wednesday 21:45 UTC = 22:45 UK during BST (summer). GitHub cron is
+    # UTC-only, so during GMT (winter) this fires at 21:45 UK instead —
+    # close enough for a nightly batch job.
+    - cron: "45 21 * * 3"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: limit FAPDA to 200 records, write the report to the job summary, skip PR creation"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: weekly-update
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.11"
+  # Cache key for the 1.1 GB model download from the private HF repo
+  # ncerutti/openfpd-classifier. Bump this whenever the model artifacts on
+  # Hugging Face change, so the next run re-downloads instead of using the
+  # cached copy.
+  MODEL_REVISION: "2026-06"
+
+jobs:
+  fetch:
+    name: Fetch source data
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    outputs:
+      fapda_status: ${{ steps.fapda.outcome }}
+      pine_status: ${{ steps.pine.outcome }}
+      gifna_status: ${{ steps.gifna.outcome }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-fetch.txt
+
+      - name: Install fetch dependencies
+        run: pip install -r requirements-fetch.txt
+
+      # FAPDA is the core source: if it fails, the run is not worth
+      # continuing and the job fails loudly.
+      - name: Fetch FAPDA (decisions + frameworks)
+        id: fapda
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "Dry run: limiting FAPDA fetch to 200 records"
+            python fetch_all_data.py --source fapda --no_csv --fapda_limit 200
+          else
+            python fetch_all_data.py --source fapda --no_csv
+          fi
+
+      # PINE scrapes the OECD Shiny app and fails loudly when the app is
+      # redeployed. The run must still process FAPDA, so the failure is
+      # tolerated here and surfaced prominently in the PR body via the
+      # pine_status job output.
+      - name: Fetch PINE (instrument-level, OECD Shiny app)
+        id: pine
+        continue-on-error: true
+        run: python fetch_all_data.py --source pine
+
+      # GIFNA record-level data is manual-only; this fetch only retrieves the
+      # per-country map counts used as a freshness signal. Cheap, and a
+      # failure only disables the staleness check.
+      - name: Fetch GIFNA freshness signal
+        id: gifna
+        continue-on-error: true
+        run: python fetch_all_data.py --source gifna --skip_gifna_boundaries --no_csv
+
+      # Paths share data/ as the common ancestor, so the artifact preserves
+      # the fapda/, pine/, gifna/ layout and downloads cleanly into data/.
+      # PINE/GIFNA files may be absent after a tolerated failure; the upload
+      # only errors when nothing at all matched (i.e. FAPDA failed too).
+      - name: Upload fetched data
+        uses: actions/upload-artifact@v4
+        with:
+          name: fetched-data
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            data/fapda/fapda_policy_decisions.jsonl
+            data/fapda/fapda_policy_frameworks.jsonl
+            data/fapda/fapda_etl_metadata.json
+            data/pine/pine_instruments.csv
+            data/pine/pine_etl_metadata.json
+            data/gifna/gifna_map_data_records.jsonl
+
+  update-and-classify:
+    name: Update, classify, and open PR
+    runs-on: ubuntu-latest
+    needs: fetch
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-fetch.txt
+
+      - name: Install pipeline dependencies
+        run: pip install -r requirements-fetch.txt
+
+      - name: Download fetched data
+        uses: actions/download-artifact@v4
+        with:
+          name: fetched-data
+          path: data
+
+      - name: Set run tags
+        run: |
+          echo "RUN_TAG=$(date -u +%Y%m%d)" >> "$GITHUB_ENV"
+          echo "DATE_TAG=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
+
+      # Dedupe the fetched data against the checked-in canonical dataset
+      # (data/FSPD_new.parquet). Missing source files (e.g. PINE failed
+      # upstream) are skipped per-source and reported in the summary.
+      # GIFNA record-level data is manual-only: when a manually downloaded
+      # export is committed under data/gifna/manual/, the newest CSV there is
+      # ingested (dedupe on (db, id) makes re-ingesting the same file a no-op).
+      - name: Update dataset
+        id: update
+        run: |
+          ARGS=(--summary "data/updates/summary_${RUN_TAG}.json")
+          GIFNA_CSV=$(ls -1t data/gifna/manual/*.csv 2>/dev/null | head -1 || true)
+          if [ -n "$GIFNA_CSV" ]; then
+            echo "Using manual GIFNA export: $GIFNA_CSV"
+            ARGS+=(--gifna_csv "$GIFNA_CSV")
+          fi
+          python -m src.pipeline.update_dataset "${ARGS[@]}"
+          python - <<'EOF'
+          import json, os
+          summary = json.load(open(f"data/updates/summary_{os.environ['RUN_TAG']}.json"))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"new_rows={summary['new_rows_total']}\n")
+              out.write(f"new_rows_file={summary['new_rows_file'] or ''}\n")
+          EOF
+
+      # ---- Classification (only when there are new rows) ----
+
+      - name: Cache classifier models
+        if: steps.update.outputs.new_rows != '0'
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: openfpd-classifier-${{ env.MODEL_REVISION }}
+
+      - name: Install ML dependencies (CPU-only torch)
+        if: steps.update.outputs.new_rows != '0'
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install transformers xgboost scikit-learn joblib huggingface_hub
+
+      - name: Download models from Hugging Face
+        if: steps.update.outputs.new_rows != '0' && steps.model-cache.outputs.cache-hit != 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -c "from huggingface_hub import snapshot_download; \
+                     snapshot_download('ncerutti/openfpd-classifier', local_dir='models')"
+
+      - name: Classify new rows (two-stage CPU inference)
+        if: steps.update.outputs.new_rows != '0'
+        run: |
+          python classify_new.py \
+            --model_dir models \
+            --input "${{ steps.update.outputs.new_rows_file }}" \
+            --output "data/updates/new_rows_${RUN_TAG}_classified.parquet"
+
+      - name: Merge predictions into canonical dataset
+        if: steps.update.outputs.new_rows != '0'
+        run: |
+          python -m src.pipeline.merge_predictions \
+            --combined data/FSPD_new.parquet \
+            --predictions "data/updates/new_rows_${RUN_TAG}_classified.parquet" \
+            --output data/FSPD_new.parquet
+
+      # ---- Report + PR ----
+
+      - name: Build run report
+        run: |
+          ARGS=(--summary "data/updates/summary_${RUN_TAG}.json")
+          if [ -f "data/updates/new_rows_${RUN_TAG}_classified.parquet" ]; then
+            ARGS+=(--classified "data/updates/new_rows_${RUN_TAG}_classified.parquet")
+          fi
+          python -m src.pipeline.make_pr_body "${ARGS[@]}" \
+            --fapda_status "${{ needs.fetch.outputs.fapda_status }}" \
+            --pine_status "${{ needs.fetch.outputs.pine_status }}" \
+            --gifna_status "${{ needs.fetch.outputs.gifna_status }}" \
+            --run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --output pr_body.md
+          cat pr_body.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Zero new rows: the report above is the whole outcome (graceful stop).
+      # Dry run: report only, never a PR.
+      - name: Create pull request
+        if: steps.update.outputs.new_rows != '0' && inputs.dry_run != true
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: auto-update/${{ env.DATE_TAG }}
+          delete-branch: true
+          add-paths: |
+            data/FSPD_new.parquet
+            data/updates/*
+          commit-message: "Weekly data update ${{ env.DATE_TAG }}"
+          title: "Weekly data update ${{ env.DATE_TAG }}"
+          body-path: pr_body.md

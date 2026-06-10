@@ -369,6 +369,37 @@ def load_pine(path: Path) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Canonical schema (49 columns) — shared with update_dataset.py
+# ---------------------------------------------------------------------------
+
+CANONICAL_COLUMNS = [
+    "id", "db", "country", "iso",
+    "policy_description", "policydecision_details",
+    "initialdate", "y_start", "y_end",
+    "FAPDA_region", "FAPDA_subregion", "who_region",
+    "policydirection", "policyphase",
+    "targeted", "emergency", "term",
+    "contextoradditionalinfo", "decision_making_institution",
+    "budget", "beneficiaries",
+    "policycategorycode", "policycategory",
+    "sdg_codes", "roadmap_codes", "g20_codes", "quipd",
+    "gendermainstreamed", "nutritionmainstreamed",
+    "foodsecuritydimension",
+    "commodity1", "commodity2", "commodity3", "additionalcommodities",
+    "source1name", "source1link",
+    "source2name", "source2link",
+    "source3name", "source3link",
+    "url", "topics",
+    # GIFNA-specific
+    "policy_type",
+    # PINE-specific
+    "instrument_type", "instrument_type_detail",
+    "pine_status", "pine_domains",
+    "generaltaxbase", "specifictaxbase",
+]
+
+
+# ---------------------------------------------------------------------------
 # ISO lookup from frameworks (FAPDA decisions lack ISO codes)
 # ---------------------------------------------------------------------------
 
@@ -416,34 +447,8 @@ def build(
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Canonical column order
-    ordered = [
-        "id", "db", "country", "iso",
-        "policy_description", "policydecision_details",
-        "initialdate", "y_start", "y_end",
-        "FAPDA_region", "FAPDA_subregion", "who_region",
-        "policydirection", "policyphase",
-        "targeted", "emergency", "term",
-        "contextoradditionalinfo", "decision_making_institution",
-        "budget", "beneficiaries",
-        "policycategorycode", "policycategory",
-        "sdg_codes", "roadmap_codes", "g20_codes", "quipd",
-        "gendermainstreamed", "nutritionmainstreamed",
-        "foodsecuritydimension",
-        "commodity1", "commodity2", "commodity3", "additionalcommodities",
-        "source1name", "source1link",
-        "source2name", "source2link",
-        "source3name", "source3link",
-        "url", "topics",
-        # GIFNA-specific
-        "policy_type",
-        # PINE-specific
-        "instrument_type", "instrument_type_detail",
-        "pine_status", "pine_domains",
-        "generaltaxbase", "specifictaxbase",
-    ]
-    extra = [c for c in df.columns if c not in ordered]
-    df = df[[c for c in ordered if c in df.columns] + extra]
+    extra = [c for c in df.columns if c not in CANONICAL_COLUMNS]
+    df = df[[c for c in CANONICAL_COLUMNS if c in df.columns] + extra]
 
     output.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(output, index=False)

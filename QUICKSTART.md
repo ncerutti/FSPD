@@ -29,10 +29,13 @@ python fetch_all_data.py
 ```
 
 Useful options:
+- `--source fapda|gifna|pine` to run one source only
 - `--output_dir data` to set the base folder
-- `--no_csv` to skip CSV for every source
+- `--no_csv` to skip CSV for FAPDA/GIFNA
 - `--fapda_limit 500` for a quick smoke run
-- `--pine_flow_id DSD_CAPMF@DF_CAPMF` (repeatable)
+
+Each source runs independently; the script prints a per-source summary and
+exits non-zero if any source failed (CI-friendly).
 
 ## Fetch GIFNA Data (ETL)
 ```bash
@@ -48,11 +51,12 @@ Useful options:
 python fetch_pine_data.py --output_dir data/raw/pine
 ```
 
+Fetches record-level instruments from the PINE Shiny app (see
+`docs/fetching.md` for how this works).
+
 Useful options:
-- `--list_flows` to see available OECD.ENV.EPI flow IDs
-- `--flow_id DSD_CAPMF@DF_CAPMF` (repeatable)
-- `--start_period 2010 --end_period 2025`
-- `--no_csv` to export JSON/JSONL only
+- `--include_ertr` to also fetch environmentally related tax revenue
+- `--min_rows 1000` validation floor for the subscheme table
 
 ## Configuration
 Edit `src/models/config.py` to customize training parameters.

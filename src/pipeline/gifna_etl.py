@@ -86,7 +86,12 @@ def map_counts_records(map_payload: dict[str, Any]) -> list[dict[str, Any]]:
         for entry in entries:
             if not isinstance(entry, list) or len(entry) < 3:
                 continue
-            iso2, country, action_count = entry[0], entry[1], entry[2]
+            # Country names containing commas arrive split across elements
+            # (e.g. ["CC", "China", " Macao SAR", 22]): the count is always
+            # the last element, the country is everything in between.
+            iso2 = entry[0]
+            country = ", ".join(str(p).strip() for p in entry[1:-1])
+            action_count = entry[-1]
             rows.append(
                 {
                     "bucket": bucket,

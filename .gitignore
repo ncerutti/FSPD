@@ -24,17 +24,25 @@ __pycache__/
 # OS
 .DS_Store
 
-# Model outputs
+# Model outputs (models live on Hugging Face: ncerutti/openfpd-classifier)
 outputs/models/checkpoints/
+outputs/models/stage2_models/
+outputs/models/cat_encoder.joblib
 outputs/plots/*.png
 best_model.pt
+best_model_slim.pt
 
-# Data
-data/FSPD_ml_ready.csv
-data/*_predictions.csv
-data/*.csv
-data/*.parquet
-data/
+# Data: ignore everything under data/ except the labelled training set, the
+# canonical dataset, the manual GIFNA exports, and the weekly update outputs
+# (committed via the automated PR — see .github/workflows/weekly-update.yml).
+data/*
+!data/FSPD.csv
+!data/FSPD.parquet
+!data/FSPD_new.parquet
+!data/updates/
+!data/gifna/
+data/gifna/*
+!data/gifna/manual/
 
 # Jupyter
 .ipynb_checkpoints/

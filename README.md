@@ -20,7 +20,8 @@ The Open Food Policy Database (OpenFPD) aggregates 46,155 policies and framework
 | Conference abstract (CS2Italy2026) | Complete |
 | ETL harmonization (FSPD_new.parquet) | Complete |
 | Policy submission web app | Complete |
-| Production pipeline & API | In progress |
+| Weekly update automation (GitHub Actions) | Complete |
+| Production pipeline & API | In progress (API pending) |
 
 ## Model Performance
 
@@ -36,6 +37,16 @@ Two-stage hybrid: XLM-RoBERTa embeddings + XGBoost classifiers.
 | DietHealth | 70.9 | 73.8 | +2.8 |
 
 Feature importance: ~99% from transformer embeddings across all tasks.
+
+## Automation
+
+A scheduled GitHub Actions workflow (`.github/workflows/weekly-update.yml`)
+runs every Wednesday night (22:45 UK): it fetches new FAPDA/PINE data (plus a GIFNA freshness signal),
+dedupes against `data/FSPD_new.parquet`, classifies new rows with the
+two-stage model (CPU, models pulled from a private Hugging Face repo), and
+opens a pull request with the updated dataset and a run report. See
+`docs/automation.md` for the schedule, dry-run mode, review checklist, and
+failure playbook.
 
 ## Data Sources
 
@@ -81,7 +92,7 @@ FSPD/
 ├── fetch_all_data.py          # Run all ETL fetchers into data/
 ├── fetch_fapda_data.py        # ETL entrypoint for FAPDA ingestion
 ├── fetch_gifna_data.py        # ETL entrypoint for GIFNA public assets
-├── fetch_pine_data.py         # ETL entrypoint for PINE (OECD SDMX)
+├── fetch_pine_data.py         # ETL entrypoint for PINE (record-level, OECD Shiny app)
 ├── src/
 │   ├── models/               # ML model definitions and training
 │   ├── pipeline/             # Data ingestion and transformation

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Quick start script for fetching PINE-related OECD SDMX data.
+Quick start script for fetching record-level OECD PINE data.
 
 Usage:
-    python fetch_pine_data.py
-    python fetch_pine_data.py --flow_id DSD_CAPMF@DF_CAPMF --list_flows
+    python3 fetch_pine_data.py
+    python3 fetch_pine_data.py --include_ertr
 """
 import os
 import sys

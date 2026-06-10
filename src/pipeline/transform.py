@@ -77,10 +77,18 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def _obj_desc(obj: Any, fallback_key: str = "description") -> str | None:
-    """Extract english description from a nested FAPDA object."""
+    """Extract english description from a nested FAPDA object.
+
+    Some FAPDA objects (policyMeasures, commodities) carry the literal
+    placeholder string "description_en" in that field; fall back to
+    "description" in that case.
+    """
     if not isinstance(obj, dict):
         return None
-    return _str(obj.get("description_en") or obj.get("description"))
+    en = _str(obj.get("description_en"))
+    if en and en != "description_en":
+        return en
+    return _str(obj.get("description"))
 
 
 def _pipe_join(items: list[str | None]) -> str | None:
@@ -148,6 +156,7 @@ def transform_decision(rec: dict[str, Any]) -> dict[str, Any]:
     if measures:
         codes = [_str(m.get("code")) for m in measures if m.get("code")]
         row["policycategorycode"] = _pipe_join(codes)
+        row["policycategory"] = _pipe_join([_obj_desc(m) for m in measures])
         crumbs = rec.get("policyMeasureCrumb") or []
         row["policyMeasureCrumb"] = " | ".join(crumbs) if crumbs else None
         row["foodsecuritydimension"] = next(
@@ -160,6 +169,7 @@ def transform_decision(rec: dict[str, Any]) -> dict[str, Any]:
         row["crs_codes"] = _pipe_join(crs)
     else:
         row["policycategorycode"] = None
+        row["policycategory"] = None
         row["policyMeasureCrumb"] = None
         row["foodsecuritydimension"] = None
         row["dac_codes"] = None
@@ -244,6 +254,7 @@ def transform_framework(rec: dict[str, Any]) -> dict[str, Any]:
     cls_ids = [_str(c.get("id")) for c in classifications if isinstance(c, dict) and c.get("id")]
     cls_labels = [_obj_desc(c) for c in classifications if isinstance(c, dict)]
     row["policycategorycode"] = _pipe_join(cls_ids)
+    row["policycategory"] = _pipe_join(cls_labels)
     row["policyFrameworkCrumb"] = " | ".join(l for l in cls_labels if l) or None
 
     # SDG codes (new — frameworks only)

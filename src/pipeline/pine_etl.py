@@ -1,17 +1,40 @@
 """
-Extract OECD PINE-related data through the public OECD SDMX REST API.
+Fetch record-level OECD PINE data (Policy INstruments for the Environment).
+
+PINE has no SDMX dataflow and no static bulk-download URL. The only public
+access is the Shiny application at https://pinedatabase.oecd.org/ (hosted on
+oecd-main.shinyapps.io). This module speaks the Shiny/SockJS wire protocol
+directly over plain HTTP (xhr-polling transport, no websockets needed):
+
+  1. GET the app page        -> worker id (_w_<hex>) + session cookie
+  2. GET _w_<w>/__token__    -> connection token
+  3. POST __sockjs__/.../xhr -> open a SockJS session (robust + multiplex framing)
+  4. send Shiny "init"       -> server registers download handlers and sends
+                                their hrefs (session/<id>/download/<name>?w=<w>)
+  5. GET the download href   -> the CSV (tab-separated), while keeping the
+                                session alive with background polls
+
+Of the app's download handlers, "downloadcsv4" (Data > Subscheme data) and
+"downloadcsv3" (Data > Environmentally related tax revenue) work headlessly.
+"downloadcsv1" (Data > Instrument data) errors server-side without a real
+browser, so the instrument-level table is derived from the subscheme table
+by deduplicating on InstrumentId (instrument attributes are constant across
+subscheme rows; columns are identical apart from the extra SubSchemeId).
 
 Usage:
-    python fetch_pine_data.py
-    python fetch_pine_data.py --flow_id DSD_CAPMF@DF_CAPMF --flow_id DSD_ERTR@DF_ERTR
-    python fetch_pine_data.py --list_flows
+    python3 fetch_pine_data.py
+    python3 fetch_pine_data.py --include_ertr
 """
 from __future__ import annotations
 
 import argparse
+import io
 import json
+import random
+import re
+import string
+import threading
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,213 +43,233 @@ import requests
 
 
 DEFAULT_OUTPUT_DIR = Path("data/raw/pine")
-FLOWS_ENDPOINT = "https://sdmx.oecd.org/public/rest/dataflow/OECD.ENV.EPI"
-DATA_ENDPOINT_TEMPLATE = "https://sdmx.oecd.org/public/rest/data/OECD.ENV.EPI,{flow_id},{version}/all"
-DEFAULT_FLOW_IDS = [
-    "DSD_CAPMF@DF_CAPMF",
-    "DSD_ERTR@DF_ERTR",
-    "DSD_ERTR@DF_ERTR_ACC",
-]
+PINE_URL = "https://pinedatabase.oecd.org/"
+USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) FSPD-PINE-ETL/2.0"
+
+SUBSCHEME_DOWNLOAD = "downloadcsv4"  # Data > Subscheme data (instrument-level + SubSchemeId)
+ERTR_DOWNLOAD = "downloadcsv3"       # Data > Environmentally related tax revenue
+
+REQUIRED_COLUMNS = ["InstrumentId", "CountryCode", "CountryName", "InstrumentType", "Status"]
 
 
-@dataclass(frozen=True)
-class Dataflow:
-    id: str
-    version: str
-    agency_id: str
-    name: str
+class PINEFetchError(RuntimeError):
+    pass
 
 
-class HTTPClient:
-    def __init__(self, timeout: int = 90, max_retries: int = 5, retry_backoff: float = 1.5):
+def _rand(chars: str, n: int) -> str:
+    return "".join(random.choices(chars, k=n))
+
+
+class ShinySession:
+    """Minimal Shiny client over SockJS xhr-polling (requests only)."""
+
+    def __init__(self, app_url: str = PINE_URL, timeout: int = 90):
         self.timeout = timeout
-        self.max_retries = max_retries
-        self.retry_backoff = retry_backoff
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "FSPD-PINE-SDMX-ETL/1.0"})
+        self.session.headers["User-Agent"] = USER_AGENT
+        self._stop_keepalive = False
+        self._keepalive_thread: threading.Thread | None = None
 
-    def get_json(
-        self,
-        url: str,
-        accept: str,
-        params: dict[str, Any] | None = None,
-        allow_no_records_404: bool = False,
-    ) -> Any:
-        last_error: Exception | None = None
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                response = self.session.get(
-                    url,
-                    headers={"Accept": accept},
-                    params=params,
-                    timeout=self.timeout,
-                )
-                if response.status_code == 404 and allow_no_records_404:
-                    if "NoRecordsFound" in response.text:
-                        return {"meta": {"message": "NoRecordsFound"}, "dataSets": [], "structure": {}}
-                response.raise_for_status()
-                return response.json()
-            except (requests.RequestException, ValueError) as exc:
-                last_error = exc
-                if attempt == self.max_retries:
-                    break
-                time.sleep(self.retry_backoff ** attempt)
-        raise RuntimeError(f"Failed to fetch JSON from {url}") from last_error
+        response = self.session.get(app_url, timeout=timeout, allow_redirects=True)
+        response.raise_for_status()
+        self.base = response.url.rstrip("/")
+        match = re.search(r"_w_([0-9a-f]+)", response.text)
+        if not match:
+            raise PINEFetchError("Could not find Shiny worker id in app page.")
+        self.worker = match.group(1)
 
+        token_resp = self.session.get(f"{self.base}/_w_{self.worker}/__token__", timeout=timeout)
+        token_resp.raise_for_status()
+        token = token_resp.text.strip()
 
-def write_json(obj: Any, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def write_jsonl(records: list[dict[str, Any]], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
-def write_csv(records: list[dict[str, Any]], path: Path) -> None:
-    try:
-        import pandas as pd
-    except ModuleNotFoundError as exc:
-        raise RuntimeError("CSV export requires pandas. Install dependencies or use --no_csv.") from exc
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    dataframe = pd.json_normalize(records, sep="_")
-    dataframe.to_csv(path, index=False)
-
-
-def safe_name(value: str) -> str:
-    return "".join(ch.lower() if ch.isalnum() else "_" for ch in value).strip("_")
-
-
-def _value_label(value_obj: dict[str, Any]) -> str:
-    if "id" in value_obj and value_obj["id"] is not None:
-        return str(value_obj["id"])
-    if "name" in value_obj and value_obj["name"] is not None:
-        return str(value_obj["name"])
-    names = value_obj.get("names")
-    if isinstance(names, dict):
-        return str(names.get("en") or next(iter(names.values()), ""))
-    return ""
-
-
-def _extract_indexed_value(values: list[dict[str, Any]], index: int | None) -> tuple[str, str]:
-    if index is None or index < 0 or index >= len(values):
-        return "", ""
-    value_obj = values[index]
-    value_id = str(value_obj.get("id", ""))
-    value_label = _value_label(value_obj)
-    return value_id, value_label
-
-
-def flatten_sdmx_data(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    data_sets = payload.get("dataSets", [])
-    structure = payload.get("structure", {})
-    dimensions = structure.get("dimensions", {})
-    attributes = structure.get("attributes", {})
-
-    if not data_sets:
-        return rows
-
-    data_set = data_sets[0]
-    series_dims = dimensions.get("series", []) or []
-    obs_dims = dimensions.get("observation", []) or []
-    series_attrs = attributes.get("series", []) or []
-    obs_attrs = attributes.get("observation", []) or []
-
-    # Common case: SDMX data grouped in series with series-level + observation-level dims.
-    if isinstance(data_set.get("series"), dict):
-        for series_key, series_obj in data_set["series"].items():
-            series_indices = [int(x) for x in series_key.split(":")] if series_key else []
-            base_row: dict[str, Any] = {}
-
-            for dim_obj, dim_idx in zip(series_dims, series_indices):
-                dim_id = dim_obj.get("id", "")
-                value_id, value_label = _extract_indexed_value(dim_obj.get("values", []), dim_idx)
-                base_row[dim_id] = value_id
-                base_row[f"{dim_id}_label"] = value_label
-
-            series_attr_indices = series_obj.get("attributes", []) if isinstance(series_obj, dict) else []
-            for attr_obj, attr_idx in zip(series_attrs, series_attr_indices):
-                attr_id = attr_obj.get("id", "")
-                value_id, value_label = _extract_indexed_value(attr_obj.get("values", []), attr_idx)
-                base_row[f"series_attr_{attr_id}"] = value_id
-                base_row[f"series_attr_{attr_id}_label"] = value_label
-
-            observations = series_obj.get("observations", {}) if isinstance(series_obj, dict) else {}
-            for obs_key, obs_values in observations.items():
-                row = dict(base_row)
-                obs_indices = [int(x) for x in obs_key.split(":")] if obs_key else []
-                for dim_obj, dim_idx in zip(obs_dims, obs_indices):
-                    dim_id = dim_obj.get("id", "")
-                    value_id, value_label = _extract_indexed_value(dim_obj.get("values", []), dim_idx)
-                    row[dim_id] = value_id
-                    row[f"{dim_id}_label"] = value_label
-
-                if isinstance(obs_values, list):
-                    row["value"] = obs_values[0] if obs_values else None
-                    obs_attr_indices = obs_values[1:]
-                    for attr_obj, attr_idx in zip(obs_attrs, obs_attr_indices):
-                        attr_id = attr_obj.get("id", "")
-                        value_id, value_label = _extract_indexed_value(attr_obj.get("values", []), attr_idx)
-                        row[f"obs_attr_{attr_id}"] = value_id
-                        row[f"obs_attr_{attr_id}_label"] = value_label
-                else:
-                    row["value"] = obs_values
-
-                rows.append(row)
-        return rows
-
-    # Fallback for datasets exposed directly in observation map.
-    observations = data_set.get("observations", {})
-    if isinstance(observations, dict):
-        for obs_key, obs_values in observations.items():
-            row: dict[str, Any] = {}
-            obs_indices = [int(x) for x in obs_key.split(":")] if obs_key else []
-            for dim_obj, dim_idx in zip(obs_dims, obs_indices):
-                dim_id = dim_obj.get("id", "")
-                value_id, value_label = _extract_indexed_value(dim_obj.get("values", []), dim_idx)
-                row[dim_id] = value_id
-                row[f"{dim_id}_label"] = value_label
-
-            if isinstance(obs_values, list):
-                row["value"] = obs_values[0] if obs_values else None
-            else:
-                row["value"] = obs_values
-            rows.append(row)
-
-    return rows
-
-
-def extract_data_message(payload: dict[str, Any]) -> dict[str, Any]:
-    data_obj = payload.get("data")
-    if isinstance(data_obj, dict) and ("dataSets" in data_obj or "structure" in data_obj):
-        return data_obj
-    return payload
-
-
-def parse_dataflows(payload: dict[str, Any]) -> dict[str, Dataflow]:
-    flows = payload.get("data", {}).get("dataflows", [])
-    parsed: dict[str, Dataflow] = {}
-    for flow in flows:
-        flow_id = str(flow.get("id", ""))
-        if not flow_id:
-            continue
-        parsed[flow_id] = Dataflow(
-            id=flow_id,
-            version=str(flow.get("version", "1.0")),
-            agency_id=str(flow.get("agencyID", "")),
-            name=str(flow.get("name", flow_id)),
+        rid = _rand(string.ascii_letters + string.digits, 18)
+        server_id = f"{random.randint(0, 999):03d}"
+        sockjs_session = _rand(string.ascii_lowercase + string.digits, 8)
+        self.sock = (
+            f"{self.base}/__sockjs__/n={rid}/t={token}/w={self.worker}/s=0/"
+            f"{server_id}/{sockjs_session}"
         )
-    return parsed
+
+        opened = self.session.post(f"{self.sock}/xhr", timeout=timeout)
+        if not opened.text.startswith("o"):
+            raise PINEFetchError(f"SockJS open failed: {opened.status_code} {opened.text[:80]}")
+        self._msg_id = 0
+
+    def _send(self, payload: str) -> None:
+        framed = f"{self._msg_id:X}#{payload}"
+        self._msg_id += 1
+        response = self.session.post(
+            f"{self.sock}/xhr_send",
+            data=json.dumps([framed]),
+            headers={"Content-Type": "text/plain"},
+            timeout=self.timeout,
+        )
+        if response.status_code not in (200, 204):
+            raise PINEFetchError(f"SockJS send failed: {response.status_code}")
+
+    def init(self, download_names: list[str]) -> None:
+        data: dict[str, Any] = {
+            ".clientdata_url_protocol": "https:",
+            ".clientdata_url_hostname": requests.utils.urlparse(self.base).hostname,
+            ".clientdata_url_port": "",
+            ".clientdata_url_pathname": requests.utils.urlparse(self.base).path + "/",
+            ".clientdata_url_search": "",
+            ".clientdata_url_hash_initial": "",
+            ".clientdata_url_hash": "",
+            ".clientdata_pixelratio": 1,
+            ".clientdata_allowDataUriScheme": True,
+            # Filter inputs the download handlers depend on. Without these the
+            # server returns header-only CSVs (subscheme) or errors (instrument).
+            "dataset4": ["All"],
+            "env_domain4": ["All"],
+            "attr4": ["All"],
+            "dataset3": ["All"],
+            "env_domain3": ["All"],
+        }
+        for name in download_names:
+            data[f".clientdata_output_{name}_hidden"] = False
+        self._send("0|o|")
+        self._send("0|m|" + json.dumps({"method": "init", "data": data}))
+
+    def collect_download_hrefs(self, download_names: list[str], wait_seconds: int = 120) -> dict[str, str]:
+        """Poll until the server has sent download hrefs for all requested names."""
+        wanted = set(download_names)
+        hrefs: dict[str, str] = {}
+        deadline = time.time() + wait_seconds
+        pattern = re.compile(r"session/[0-9a-f]+/download/([A-Za-z0-9_]+)\?w=[0-9a-f]+")
+        while time.time() < deadline and wanted - set(hrefs):
+            response = self.session.post(f"{self.sock}/xhr", timeout=self.timeout + 10)
+            if response.text.startswith("c"):
+                raise PINEFetchError(f"SockJS connection closed by server: {response.text[:120]}")
+            for match in pattern.finditer(response.text):
+                if match.group(1) in wanted:
+                    hrefs[match.group(1)] = match.group(0)
+        missing = wanted - set(hrefs)
+        if missing:
+            raise PINEFetchError(f"Server did not register download handler(s): {sorted(missing)}")
+        return hrefs
+
+    def _keepalive(self) -> None:
+        while not self._stop_keepalive:
+            try:
+                self.session.post(f"{self.sock}/xhr", timeout=self.timeout + 10)
+            except requests.RequestException:
+                time.sleep(2)
+
+    def download(self, href: str, destination: Path) -> dict[str, Any]:
+        """Download a registered Shiny download href to a file."""
+        self._stop_keepalive = False
+        self._keepalive_thread = threading.Thread(target=self._keepalive, daemon=True)
+        self._keepalive_thread.start()
+        try:
+            url = f"{self.base}/_w_{self.worker}/{href}"
+            with self.session.get(url, timeout=600, stream=True) as response:
+                if response.status_code != 200:
+                    raise PINEFetchError(
+                        f"Download failed: HTTP {response.status_code} for {href}"
+                    )
+                content_type = response.headers.get("Content-Type", "")
+                if "html" in content_type:
+                    raise PINEFetchError(f"Download returned HTML (server error) for {href}")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                size = 0
+                with destination.open("wb") as handle:
+                    for chunk in response.iter_content(1 << 16):
+                        handle.write(chunk)
+                        size += len(chunk)
+                return {
+                    "bytes": size,
+                    "server_filename": _disposition_filename(
+                        response.headers.get("Content-Disposition", "")
+                    ),
+                }
+        finally:
+            self._stop_keepalive = True
+
+
+def _disposition_filename(disposition: str) -> str | None:
+    match = re.search(r'filename="?([^";]+)"?', disposition)
+    return match.group(1) if match else None
+
+
+def fetch_downloads(
+    download_names: list[str],
+    output_dir: Path,
+    timeout: int,
+    max_retries: int,
+    retry_backoff: float,
+) -> dict[str, dict[str, Any]]:
+    """Open a Shiny session and download the requested files, with retries."""
+    last_error: Exception | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            shiny = ShinySession(timeout=timeout)
+            shiny.init(download_names)
+            hrefs = shiny.collect_download_hrefs(download_names)
+            results: dict[str, dict[str, Any]] = {}
+            for name in download_names:
+                raw_path = output_dir / f"pine_{name}_raw.tsv"
+                info = shiny.download(hrefs[name], raw_path)
+                info["raw_path"] = str(raw_path)
+                results[name] = info
+                print(f"[pine:{name}] downloaded {info['bytes']:,} bytes "
+                      f"({info.get('server_filename')})")
+            return results
+        except (requests.RequestException, PINEFetchError) as exc:
+            last_error = exc
+            print(f"[pine] attempt {attempt}/{max_retries} failed: {exc}")
+            if attempt < max_retries:
+                time.sleep(retry_backoff ** attempt)
+    raise PINEFetchError(f"PINE fetch failed after {max_retries} attempts") from last_error
+
+
+def process_subschemes(raw_path: Path, output_dir: Path, min_rows: int) -> dict[str, Any]:
+    """Validate the subscheme TSV and derive the instrument-level CSV."""
+    import pandas as pd
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frame = pd.read_csv(raw_path, sep="\t", dtype=str, low_memory=False)
+    missing = [c for c in REQUIRED_COLUMNS if c not in frame.columns]
+    if missing:
+        raise PINEFetchError(f"Subscheme download missing expected columns: {missing}")
+    if len(frame) < min_rows:
+        raise PINEFetchError(
+            f"Subscheme download has only {len(frame)} rows (expected >= {min_rows})."
+        )
+
+    subscheme_csv = output_dir / "pine_subschemes.csv"
+    frame.to_csv(subscheme_csv, index=False)
+
+    instruments = frame.drop_duplicates(subset=["InstrumentId"], keep="first")
+    subscheme_cols = [c for c in instruments.columns if c.startswith("SubScheme")]
+    instruments = instruments.drop(columns=subscheme_cols)
+    instruments_csv = output_dir / "pine_instruments.csv"
+    instruments.to_csv(instruments_csv, index=False)
+
+    print(f"[pine:subschemes] {len(frame):,} subscheme rows -> {subscheme_csv}")
+    print(f"[pine:instruments] {len(instruments):,} instruments -> {instruments_csv}")
+    return {
+        "subscheme_rows": len(frame),
+        "instrument_rows": len(instruments),
+        "subscheme_csv": str(subscheme_csv),
+        "instruments_csv": str(instruments_csv),
+    }
+
+
+def process_ertr(raw_path: Path, output_dir: Path) -> dict[str, Any]:
+    import pandas as pd
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frame = pd.read_csv(raw_path, sep="\t", dtype=str, low_memory=False)
+    ertr_csv = output_dir / "pine_ertr.csv"
+    frame.to_csv(ertr_csv, index=False)
+    print(f"[pine:ertr] {len(frame):,} rows -> {ertr_csv}")
+    return {"rows": len(frame), "csv_path": str(ertr_csv)}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Fetch PINE-related OECD datasets via SDMX REST (source referenced by the PINE platform)."
+        description="Fetch record-level OECD PINE data via the PINE Shiny application."
     )
     parser.add_argument(
         "--output_dir",
@@ -235,27 +278,15 @@ def parse_args() -> argparse.Namespace:
         help=f"Directory for outputs (default: {DEFAULT_OUTPUT_DIR}).",
     )
     parser.add_argument(
-        "--flow_id",
-        action="append",
-        default=None,
-        help="Flow ID to fetch (repeatable). Example: --flow_id DSD_CAPMF@DF_CAPMF",
-    )
-    parser.add_argument(
-        "--list_flows",
+        "--include_ertr",
         action="store_true",
-        help="Only list available OECD.ENV.EPI flow IDs and exit.",
+        help="Also fetch the environmentally related tax revenue table.",
     )
     parser.add_argument(
-        "--start_period",
-        type=str,
-        default=None,
-        help="Optional SDMX startPeriod filter (e.g. 2010).",
-    )
-    parser.add_argument(
-        "--end_period",
-        type=str,
-        default=None,
-        help="Optional SDMX endPeriod filter (e.g. 2025).",
+        "--min_rows",
+        type=int,
+        default=1000,
+        help="Fail if the subscheme table has fewer rows than this (default: 1000).",
     )
     parser.add_argument(
         "--timeout",
@@ -266,19 +297,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max_retries",
         type=int,
-        default=5,
-        help="Retry count on transient HTTP/JSON errors (default: 5).",
+        default=3,
+        help="Full-session retry count (default: 3).",
     )
     parser.add_argument(
         "--retry_backoff",
         type=float,
-        default=1.5,
-        help="Retry backoff multiplier (default: 1.5).",
-    )
-    parser.add_argument(
-        "--no_csv",
-        action="store_true",
-        help="Skip CSV exports and write JSON/JSONL only.",
+        default=2.0,
+        help="Retry backoff multiplier (default: 2.0).",
     )
     return parser.parse_args()
 
@@ -286,88 +312,54 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     started_at = datetime.now(tz=timezone.utc).isoformat()
+    output_dir: Path = args.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    client = HTTPClient(
+    download_names = [SUBSCHEME_DOWNLOAD]
+    if args.include_ertr:
+        download_names.append(ERTR_DOWNLOAD)
+
+    results = fetch_downloads(
+        download_names,
+        output_dir=output_dir,
         timeout=args.timeout,
         max_retries=args.max_retries,
         retry_backoff=args.retry_backoff,
     )
-    output_dir: Path = args.output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
 
-    flows_payload = client.get_json(
-        FLOWS_ENDPOINT,
-        accept="application/vnd.sdmx.structure+json;version=1.0.0-wd",
-    )
-    flows = parse_dataflows(flows_payload if isinstance(flows_payload, dict) else {})
-
-    if args.list_flows:
-        print("Available OECD.ENV.EPI flow IDs:")
-        for flow in sorted(flows.values(), key=lambda f: f.id):
-            print(f"{flow.id} ({flow.version}) - {flow.name}")
-        return
-
-    target_flow_ids = args.flow_id if args.flow_id else list(DEFAULT_FLOW_IDS)
-    missing_flow_ids = [flow_id for flow_id in target_flow_ids if flow_id not in flows]
-    if missing_flow_ids:
-        raise RuntimeError(
-            "Unknown flow_id(s): " + ", ".join(missing_flow_ids) + ". Run with --list_flows."
-        )
-
-    summaries: dict[str, Any] = {}
-
-    for flow_id in target_flow_ids:
-        flow = flows[flow_id]
-        params: dict[str, Any] = {}
-        if args.start_period:
-            params["startPeriod"] = args.start_period
-        if args.end_period:
-            params["endPeriod"] = args.end_period
-
-        endpoint = DATA_ENDPOINT_TEMPLATE.format(flow_id=flow.id, version=flow.version)
-        data_payload = client.get_json(
-            endpoint,
-            accept="application/vnd.sdmx.data+json;version=1.0.0-wd",
-            params=params if params else None,
-            allow_no_records_404=True,
-        )
-        data_message = extract_data_message(data_payload if isinstance(data_payload, dict) else {})
-        records = flatten_sdmx_data(data_message)
-
-        flow_slug = safe_name(flow.id)
-        raw_json_path = output_dir / f"pine_{flow_slug}_raw.json"
-        jsonl_path = output_dir / f"pine_{flow_slug}_records.jsonl"
-        write_json(data_payload, raw_json_path)
-        write_jsonl(records, jsonl_path)
-
-        csv_path: str | None = None
-        if not args.no_csv:
-            csv_file = output_dir / f"pine_{flow_slug}_records.csv"
-            write_csv(records, csv_file)
-            csv_path = str(csv_file)
-
-        summaries[flow.id] = {
-            "name": flow.name,
-            "version": flow.version,
-            "agency_id": flow.agency_id,
-            "endpoint": endpoint,
-            "params": params,
-            "records": len(records),
-            "raw_json_path": str(raw_json_path),
-            "jsonl_path": str(jsonl_path),
-            "csv_path": csv_path,
+    downloads: dict[str, Any] = {}
+    sub_info = results[SUBSCHEME_DOWNLOAD]
+    sub_summary = process_subschemes(Path(sub_info["raw_path"]), output_dir, args.min_rows)
+    downloads["instruments"] = {
+        "rows": sub_summary["instrument_rows"],
+        "csv_path": sub_summary["instruments_csv"],
+        "raw_path": sub_info["raw_path"],
+        "server_filename": sub_info.get("server_filename"),
+    }
+    downloads["subschemes"] = {
+        "rows": sub_summary["subscheme_rows"],
+        "csv_path": sub_summary["subscheme_csv"],
+        "raw_path": sub_info["raw_path"],
+        "server_filename": sub_info.get("server_filename"),
+    }
+    if args.include_ertr:
+        ertr_info = results[ERTR_DOWNLOAD]
+        ertr_summary = process_ertr(Path(ertr_info["raw_path"]), output_dir)
+        downloads["ertr"] = {
+            "rows": ertr_summary["rows"],
+            "csv_path": ertr_summary["csv_path"],
+            "raw_path": ertr_info["raw_path"],
+            "server_filename": ertr_info.get("server_filename"),
         }
-        print(f"[{flow.id}] saved {len(records)} records")
 
     metadata = {
         "fetched_at_utc": started_at,
-        "source": "https://oecd-main.shinyapps.io/pinedatabase/",
-        "source_mode": "oecd_sdmx_rest",
-        "dataflow_endpoint": FLOWS_ENDPOINT,
-        "flows": summaries,
+        "source": PINE_URL,
+        "source_mode": "shiny_sockjs_xhr",
+        "downloads": downloads,
     }
     metadata_path = output_dir / "pine_etl_metadata.json"
-    write_json(metadata, metadata_path)
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Metadata written to {metadata_path}")
 
 
