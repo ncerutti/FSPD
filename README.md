@@ -1,10 +1,10 @@
-# Living Food System Policy Database (FSPD)
+# OpenFPD — Open Food Policy Database
 
-Automated ML pipeline that transforms the static FSPD into a living database via transformer-based policy classification.
+Automated ML pipeline that harmonizes food policy data from multiple sources and classifies it via transformer-based multi-task learning.
 
 ## Project Overview
 
-The Food System Policy Database (FSPD) contains approximately 11,900 policies and 3,700 frameworks covering 192 countries and eight regional groups. This project transforms the FSPD from a static snapshot into a living database that automatically:
+The Open Food Policy Database (OpenFPD) aggregates 46,155 policies and frameworks from FAPDA, GIFNA, and PINE covering 195+ countries. This project transforms those static snapshots into a living database that automatically:
 
 1. Ingests new policies from source databases (FAPDA, PINE, GIfNA)
 2. Classifies them using transformer-based ML models
@@ -18,6 +18,8 @@ The Food System Policy Database (FSPD) contains approximately 11,900 policies an
 | Stage 1: XLM-RoBERTa multi-task | Complete |
 | Stage 2: XGBoost hybrid | Complete |
 | Conference abstract (CS2Italy2026) | Complete |
+| ETL harmonization (FSPD_new.parquet) | Complete |
+| Policy submission web app | Complete |
 | Production pipeline & API | In progress |
 
 ## Model Performance
@@ -95,7 +97,7 @@ FSPD/
 
 ## Data
 
-15,592 policies from 195 countries, sourced from FAPDA, PINE, GIfNA, and Nourishing. Split 80/10/10, stratified by segment, seed=42.
+46,155 policies and frameworks from FAPDA (decisions + frameworks), GIFNA, and PINE, harmonized into `data/FSPD_new.parquet`. The original `data/FSPD.csv` (15,592 rows) is retained as the labelled training set for the ML models.
 
 ## Installation
 
@@ -148,6 +150,8 @@ jupyter notebook notebooks/01_exploratory_analysis.ipynb
 ## Reference
 
 Lowder, S.K., Ruggeri Laderchi, C., Cerutti, N., Parsons, K. (2025). Food System Policies: a Global Snapshot from the Food System Policy Database (FSPD). Global Food Security. https://doi.org/10.1016/j.gfs.2025.100894
+
+OpenFPD builds on and extends the original FSPD dataset.
 
 ## License
 

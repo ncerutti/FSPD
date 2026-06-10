@@ -120,6 +120,7 @@ class FAPDAClient:
         page_size: int,
         limit: int | None = None,
         sleep_seconds: float = 0.0,
+        skip_on_error: bool = False,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         if page_size <= 0:
             raise ValueError("page_size must be > 0")
@@ -136,7 +137,15 @@ class FAPDAClient:
 
             length = page_size if limit is None else min(page_size, limit - start)
             params = self._build_params(spec, start=start, length=length, draw=draw)
-            payload = self._request_json(spec.path, params)
+            try:
+                payload = self._request_json(spec.path, params)
+            except RuntimeError as exc:
+                if not skip_on_error:
+                    raise
+                print(f"[{spec.name}] WARNING: skipping page at offset {start} ({exc})")
+                start += page_size
+                draw += 1
+                continue
             batch = payload.get("ResourceList")
             if not isinstance(batch, list):
                 raise RuntimeError(
@@ -223,12 +232,14 @@ def run_export(
     limit: int | None,
     sleep_seconds: float,
     write_csv: bool,
+    skip_on_error: bool = False,
 ) -> dict[str, Any]:
     records, api_metadata = client.fetch_all(
         endpoint,
         page_size=page_size,
         limit=limit,
         sleep_seconds=sleep_seconds,
+        skip_on_error=skip_on_error,
     )
     records, duplicates_removed = deduplicate_by_id(records)
 
@@ -309,6 +320,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip flattened CSV exports and write only JSONL.",
     )
+    parser.add_argument(
+        "--skip_on_error",
+        action="store_true",
+        help="Skip pages that fail JSON parsing instead of aborting (e.g. corrupted server response).",
+    )
     return parser.parse_args()
 
 
@@ -341,6 +357,7 @@ def main() -> None:
             limit=args.limit,
             sleep_seconds=args.sleep_seconds,
             write_csv=not args.no_csv,
+            skip_on_error=args.skip_on_error,
         )
         all_summaries[endpoint.name] = summary
         print(

@@ -1,7 +1,7 @@
-# Living FSPD Research Notes
+# OpenFPD Research Notes
 
 ## Core Contribution
-Automated ML system to transform static FSPD into continuously updated database using transformer models for policy classification.
+OpenFPD (Open Food Policy Database): a harmonized, continuously updated database of food policies from FAPDA, GIFNA, and PINE, with transformer-based ML classification and community contribution.
 
 ## Key Points
 

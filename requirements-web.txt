@@ -1,0 +1,6 @@
+# Dependencies for the policy submission web app (web/app.py)
+# Venv: .venv-web (created with: uv venv .venv-web && uv pip install -r requirements-web.txt)
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+jinja2>=3.1.0
+python-multipart>=0.0.9

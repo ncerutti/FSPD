@@ -1,7 +1,7 @@
-# Claude Context: Living FSPD Project
+# Claude Context: OpenFPD Project
 
 ## Project Goal
-Transform the static Food System Policy Database (FSPD) into a "living database" that automatically updates with new policies from source databases (FAPDA, PINE, GIfNA) using ML classification.
+Build OpenFPD (Open Food Policy Database) — a living, open database that harmonizes food policies from FAPDA, PINE, and GIFNA, classifies them via ML, and accepts community contributions through a web form.
 
 ## What We've Built
 
@@ -12,7 +12,18 @@ Transform the static Food System Policy Database (FSPD) into a "living database"
 - Significant class imbalance (Lever: 246:1 ratio)
 - Multilingual text (Spanish, French, English) - avg 603 chars
 
-### 2. ML Model Architecture (DONE)
+### 2. ETL Harmonization (DONE)
+- 46,155 rows from FAPDA decisions (27,892), FAPDA frameworks (13,895), GIFNA (3,731), PINE (637)
+- Output: `data/FSPD_new.parquet` + `data/FSPD_new.csv`
+- PINE filtered to food-relevant domains (Fisheries, Forests, LandDegradation)
+- Original `data/FSPD.csv` (15,592 rows) retained for ML training labels only
+
+### 3. Policy Submission Web App (DONE)
+- FastAPI app at `web/app.py`, templates at `web/templates/`
+- Submissions saved as JSON to `data/submissions/`
+- Venv: `.venv-web`, run with: `.venv-web/bin/uvicorn web.app:app --reload --port 8000`
+
+### 4. ML Model Architecture (DONE)
 - **Model**: XLM-RoBERTa-base (278M parameters, multilingual)
 - **Multi-task learning**: 6 simultaneous predictions
   - Segment (11 classes)

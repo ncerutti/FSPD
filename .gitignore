@@ -32,6 +32,9 @@ best_model.pt
 # Data
 data/FSPD_ml_ready.csv
 data/*_predictions.csv
+data/*.csv
+data/*.parquet
+data/
 
 # Jupyter
 .ipynb_checkpoints/
