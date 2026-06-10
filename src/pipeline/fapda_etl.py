@@ -86,6 +86,9 @@ class FAPDAClient:
                 "Accept": "application/json",
             }
         )
+        # Offsets of records skipped because the server cannot serialize
+        # them; reset per fetch_all() call, surfaced in the export summary.
+        self.skipped_offsets: list[int] = []
 
     def _request_json(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         url = self.base_url + path
@@ -117,14 +120,19 @@ class FAPDAClient:
         self, spec: EndpointSpec, start: int, length: int, draw: int
     ) -> dict[str, Any]:
         """Fetch one pagination window, recursively halving the window size
-        when the server persistently fails on it (it tends to truncate large
-        JSON responses, so smaller windows usually succeed)."""
+        when the server persistently fails on it. Two failure modes are
+        handled: truncated large responses (smaller windows succeed) and
+        poisoned records the server's serializer crashes on (the response is
+        a 200 with a truncated body and an embedded 500 stack trace) — those
+        are isolated by bisection and skipped one record at a time."""
         params = self._build_params(spec, start=start, length=length, draw=draw)
         try:
             return self._request_json(spec.path, params)
         except RuntimeError:
-            if length <= MIN_PAGE_SIZE:
+            if length == 1:
                 raise
+            if length <= MIN_PAGE_SIZE:
+                return self._fetch_singles(spec, start, length, draw)
             half = length // 2
             print(
                 f"[{spec.name}] window at offset {start} (length {length}) keeps "
@@ -137,6 +145,37 @@ class FAPDAClient:
                 second.get("ResourceList") or []
             )
             return merged
+
+    def _fetch_singles(
+        self, spec: EndpointSpec, start: int, length: int, draw: int
+    ) -> dict[str, Any]:
+        """Last resort for a poisoned window: fetch records one at a time and
+        skip only the ones the server cannot serialize."""
+        merged: dict[str, Any] | None = None
+        records: list[dict[str, Any]] = []
+        for offset in range(start, start + length):
+            params = self._build_params(spec, start=offset, length=1, draw=draw)
+            try:
+                payload = self._request_json(spec.path, params)
+            except RuntimeError:
+                self.skipped_offsets.append(offset)
+                print(
+                    f"[{spec.name}] WARNING: skipping record at offset {offset} — "
+                    f"the server returns a corrupt response for it (500 inside a 200)"
+                )
+                continue
+            if merged is None:
+                merged = {k: v for k, v in payload.items() if k != "ResourceList"}
+            records.extend(payload.get("ResourceList") or [])
+        if merged is None:
+            # Every single record in the window failed: that is not one bad
+            # record but a broken endpoint — fail the run.
+            raise RuntimeError(
+                f"all {length} single-record fetches failed at offset {start} "
+                f"for {spec.name}"
+            )
+        merged["ResourceList"] = records
+        return merged
 
     @staticmethod
     def _build_params(spec: EndpointSpec, start: int, length: int, draw: int) -> dict[str, Any]:
@@ -161,6 +200,7 @@ class FAPDAClient:
         if page_size <= 0:
             raise ValueError("page_size must be > 0")
 
+        self.skipped_offsets = []
         records: list[dict[str, Any]] = []
         metadata: dict[str, Any] = {}
         expected_total: int | None = None
@@ -293,7 +333,14 @@ def run_export(
         "jsonl_path": str(jsonl_path),
         "api_records_total": api_metadata.get("recordsTotal"),
         "api_records_filtered": api_metadata.get("recordsFiltered"),
+        "skipped_offsets": list(client.skipped_offsets),
     }
+    if client.skipped_offsets:
+        print(
+            f"[{endpoint.name}] WARNING: {len(client.skipped_offsets)} record(s) "
+            f"skipped (server-side serialization errors) at offsets: "
+            f"{client.skipped_offsets}"
+        )
     if csv_path is not None:
         summary["csv_path"] = str(csv_path)
 

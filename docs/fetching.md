@@ -24,6 +24,14 @@ source failed — suitable for a scheduled GitHub Actions job.
   `fapda_etl_metadata.json`).
 - Volume: ~28,400 decisions + ~13,900 frameworks; the full pull is large
   (~800 MB) — use `--limit` for tests.
+- Robustness: the server intermittently truncates large responses and
+  occasionally cannot serialize a specific record at all (HTTP 200 with a
+  truncated body containing an embedded 500 stack trace — e.g. framework id
+  20626, June 2026). The fetcher retries with backoff, recursively halves
+  failing windows, and as a last resort fetches records one at a time,
+  skipping only the poisoned ones. Skipped offsets are listed with a WARNING
+  in the log and under `skipped_offsets` in `fapda_etl_metadata.json`; they
+  are retried from scratch on the next run.
 - Run alone:
   `.venv-fetch/bin/python3 fetch_fapda_data.py --resource both --limit 50 --output_dir /tmp/fapda_smoke`
 
