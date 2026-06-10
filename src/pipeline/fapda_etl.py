@@ -20,6 +20,8 @@ import requests
 
 DEFAULT_BASE_URL = "https://fapda.apps.fao.org/fapda/"
 DEFAULT_OUTPUT_DIR = Path("data/raw/fapda")
+# Floor for the adaptive window halving in _fetch_window.
+MIN_PAGE_SIZE = 25
 
 
 @dataclass(frozen=True)
@@ -93,14 +95,48 @@ class FAPDAClient:
             try:
                 response = self.session.get(url, params=params, timeout=self.timeout)
                 response.raise_for_status()
+                # The server intermittently truncates large responses; an
+                # incomplete body surfaces here as a JSON decode error, which
+                # is retryable like any transient failure.
                 return response.json()
             except (requests.RequestException, ValueError) as exc:
                 last_error = exc
                 if attempt == self.max_retries:
                     break
-                time.sleep(self.retry_backoff ** attempt)
+                wait = min(self.retry_backoff ** attempt, 30.0)
+                print(
+                    f"[fapda] request failed (attempt {attempt}/{self.max_retries}, "
+                    f"start={params.get('start')}, length={params.get('length')}): "
+                    f"{type(exc).__name__}; retrying in {wait:.1f}s"
+                )
+                time.sleep(wait)
 
         raise RuntimeError(f"Failed to fetch {url}") from last_error
+
+    def _fetch_window(
+        self, spec: EndpointSpec, start: int, length: int, draw: int
+    ) -> dict[str, Any]:
+        """Fetch one pagination window, recursively halving the window size
+        when the server persistently fails on it (it tends to truncate large
+        JSON responses, so smaller windows usually succeed)."""
+        params = self._build_params(spec, start=start, length=length, draw=draw)
+        try:
+            return self._request_json(spec.path, params)
+        except RuntimeError:
+            if length <= MIN_PAGE_SIZE:
+                raise
+            half = length // 2
+            print(
+                f"[{spec.name}] window at offset {start} (length {length}) keeps "
+                f"failing; splitting into windows of {half}"
+            )
+            first = self._fetch_window(spec, start, half, draw)
+            second = self._fetch_window(spec, start + half, length - half, draw)
+            merged = {key: value for key, value in first.items() if key != "ResourceList"}
+            merged["ResourceList"] = (first.get("ResourceList") or []) + (
+                second.get("ResourceList") or []
+            )
+            return merged
 
     @staticmethod
     def _build_params(spec: EndpointSpec, start: int, length: int, draw: int) -> dict[str, Any]:
@@ -136,9 +172,8 @@ class FAPDAClient:
                 break
 
             length = page_size if limit is None else min(page_size, limit - start)
-            params = self._build_params(spec, start=start, length=length, draw=draw)
             try:
-                payload = self._request_json(spec.path, params)
+                payload = self._fetch_window(spec, start=start, length=length, draw=draw)
             except RuntimeError as exc:
                 if not skip_on_error:
                     raise
@@ -282,8 +317,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--page_size",
         type=int,
-        default=1000,
-        help="Pagination size per request (default: 1000).",
+        default=250,
+        help="Pagination size per request (default: 250; framework records "
+             "are ~25 KB each and the server truncates very large responses).",
     )
     parser.add_argument(
         "--limit",
