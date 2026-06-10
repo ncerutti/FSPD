@@ -63,6 +63,14 @@ def _conform(df: pd.DataFrame) -> pd.DataFrame:
     df = df.reindex(columns=CANONICAL_COLUMNS)
     for col in _NUMERIC_COLS:
         df[col] = pd.to_numeric(df[col], errors="coerce")
+    # reindex creates absent columns as all-NaN float64; pandas 3 then raises
+    # when strings are later assigned into them (e.g. region enrichment).
+    # Cast the non-numeric ones to object so they accept any value.
+    for col in df.columns:
+        if (col not in _NUMERIC_COLS
+                and pd.api.types.is_float_dtype(df[col])
+                and df[col].isna().all()):
+            df[col] = df[col].astype("object")
     return df
 
 
@@ -114,6 +122,8 @@ def _fill_regions_from_existing(df: pd.DataFrame, existing: pd.DataFrame) -> pd.
         )
         missing = df[col].isna() & df["iso"].notna()
         if missing.any():
+            if pd.api.types.is_float_dtype(df[col]):
+                df[col] = df[col].astype("object")
             df.loc[missing, col] = df.loc[missing, "iso"].map(lookup)
     return df
 
