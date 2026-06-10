@@ -45,3 +45,5 @@ data/
 *.log
 
 
+# EnvVars
+.env
