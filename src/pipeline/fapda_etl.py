@@ -90,11 +90,14 @@ class FAPDAClient:
         # them; reset per fetch_all() call, surfaced in the export summary.
         self.skipped_offsets: list[int] = []
 
-    def _request_json(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _request_json(
+        self, path: str, params: dict[str, Any], max_retries: int | None = None
+    ) -> dict[str, Any]:
         url = self.base_url + path
         last_error: Exception | None = None
+        retries = self.max_retries if max_retries is None else max_retries
 
-        for attempt in range(1, self.max_retries + 1):
+        for attempt in range(1, retries + 1):
             try:
                 response = self.session.get(url, params=params, timeout=self.timeout)
                 response.raise_for_status()
@@ -104,11 +107,11 @@ class FAPDAClient:
                 return response.json()
             except (requests.RequestException, ValueError) as exc:
                 last_error = exc
-                if attempt == self.max_retries:
+                if attempt == retries:
                     break
                 wait = min(self.retry_backoff ** attempt, 30.0)
                 print(
-                    f"[fapda] request failed (attempt {attempt}/{self.max_retries}, "
+                    f"[fapda] request failed (attempt {attempt}/{retries}, "
                     f"start={params.get('start')}, length={params.get('length')}): "
                     f"{type(exc).__name__}; retrying in {wait:.1f}s"
                 )
@@ -117,17 +120,26 @@ class FAPDAClient:
         raise RuntimeError(f"Failed to fetch {url}") from last_error
 
     def _fetch_window(
-        self, spec: EndpointSpec, start: int, length: int, draw: int
+        self, spec: EndpointSpec, start: int, length: int, draw: int,
+        descending: bool = False,
     ) -> dict[str, Any]:
         """Fetch one pagination window, recursively halving the window size
         when the server persistently fails on it. Two failure modes are
         handled: truncated large responses (smaller windows succeed) and
         poisoned records the server's serializer crashes on (the response is
         a 200 with a truncated body and an embedded 500 stack trace) — those
-        are isolated by bisection and skipped one record at a time."""
+        are isolated by bisection and skipped one record at a time.
+
+        `descending` marks recursive calls below a window that already failed
+        persistently: the failure is established, so sub-windows probe with a
+        reduced retry budget instead of repeating the full retry/backoff dance
+        at every bisection level. Top-level windows and the final
+        single-record verdicts always use the full budget, so transient
+        network errors cannot trigger bisection or skip a healthy record."""
         params = self._build_params(spec, start=start, length=length, draw=draw)
+        retries = min(2, self.max_retries) if descending else None
         try:
-            return self._request_json(spec.path, params)
+            return self._request_json(spec.path, params, max_retries=retries)
         except RuntimeError:
             if length == 1:
                 raise
@@ -138,8 +150,9 @@ class FAPDAClient:
                 f"[{spec.name}] window at offset {start} (length {length}) keeps "
                 f"failing; splitting into windows of {half}"
             )
-            first = self._fetch_window(spec, start, half, draw)
-            second = self._fetch_window(spec, start + half, length - half, draw)
+            first = self._fetch_window(spec, start, half, draw, descending=True)
+            second = self._fetch_window(spec, start + half, length - half, draw,
+                                        descending=True)
             merged = {key: value for key, value in first.items() if key != "ResourceList"}
             merged["ResourceList"] = (first.get("ResourceList") or []) + (
                 second.get("ResourceList") or []
