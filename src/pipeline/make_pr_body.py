@@ -1,5 +1,5 @@
 """
-Render the monthly-update run report (PR body / job summary) as Markdown.
+Render the weekly-update run report (PR body / job summary) as Markdown.
 
 Inputs: the JSON summary from update_dataset.py, optionally the classified
 new-rows parquet from classify_new.py, the per-source fetch step outcomes
@@ -126,7 +126,7 @@ def _gifna_section(summary: dict) -> list[str]:
 
 def build_body(args: argparse.Namespace) -> str:
     summary = json.loads(Path(args.summary).read_text(encoding="utf-8"))
-    lines = [f"# OpenFPD monthly data update — {summary.get('run_date', 'unknown date')}", ""]
+    lines = [f"# OpenFPD weekly data update — {summary.get('run_date', 'unknown date')}", ""]
     lines += _fetch_section(args)
     lines += _sources_section(summary)
     lines += _classification_section(
@@ -136,12 +136,12 @@ def build_body(args: argparse.Namespace) -> str:
     lines += _gifna_section(summary)
     if args.run_url:
         lines += [f"Workflow run: {args.run_url}", ""]
-    lines += ["Generated automatically by `.github/workflows/monthly-update.yml`.", ""]
+    lines += ["Generated automatically by `.github/workflows/weekly-update.yml`.", ""]
     return "\n".join(lines)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render the monthly-update PR body.")
+    parser = argparse.ArgumentParser(description="Render the weekly-update PR body.")
     parser.add_argument("--summary", required=True, help="JSON summary from update_dataset.py")
     parser.add_argument("--classified", default=None,
                         help="Classified new-rows parquet (omit when no rows were classified)")
