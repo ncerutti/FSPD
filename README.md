@@ -1,3 +1,5 @@
+[![Weekly data update](https://github.com/ncerutti/FSPD/actions/workflows/weekly-update.yml/badge.svg?branch=main)](https://github.com/ncerutti/FSPD/actions/workflows/weekly-update.yml)
+
 # OpenFPD — Open Food Policy Database
 
 Automated ML pipeline that harmonizes food policy data from multiple sources and classifies it via transformer-based multi-task learning.
