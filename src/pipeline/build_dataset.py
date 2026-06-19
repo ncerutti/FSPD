@@ -274,6 +274,170 @@ def load_fapda_frameworks(path: Path) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# FAPDA — new Cloud Run xlsx export loaders (June 2026)
+#
+# FAO replaced the old DataTables JSON API with a Next.js site backed by a
+# Cloud Run API. The fetcher now downloads the same "Download results" xlsx a
+# user gets from the website. These loaders parse those exports directly into
+# the canonical schema (no transform.py / JSONL intermediary).
+# ---------------------------------------------------------------------------
+
+def _join_nonempty(values: list[Any], sep: str = "|") -> str | None:
+    out = [v for v in (_s(x) for x in values) if v]
+    return sep.join(out) or None
+
+
+def _fw_code_str(values: list[Any]) -> str | None:
+    """Pipe-join framework category codes, dropping blanks and 0, ints clean."""
+    out: list[str] = []
+    for v in values:
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            continue
+        s = _s(v)
+        if not s or s == "0":
+            continue
+        # numeric codes come through as floats (e.g. 12.0) — normalise to int
+        try:
+            s = str(int(float(s)))
+        except (ValueError, TypeError):
+            pass
+        out.append(s)
+    return "|".join(out) or None
+
+
+def load_fapda_decisions_xlsx(path: Path) -> pd.DataFrame:
+    """Parse the new policy_decisions.xlsx export into the canonical schema."""
+    print(f"Reading FAPDA decisions xlsx: {path.name} …")
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        raw = pd.read_excel(path, engine="openpyxl")
+
+    commodity_cols = [f"Commodity {i}" for i in range(1, 20)]
+    source_link_cols = [f"Source Link {i}" for i in range(1, 6)]
+
+    rows: list[dict[str, Any]] = []
+    for _, r in raw.iterrows():
+        fapda_id = _s(r.get("ID"))
+        if not fapda_id:
+            continue
+        # ids arrive as floats from openpyxl; normalise to a clean int string
+        try:
+            fapda_id = str(int(float(fapda_id)))
+        except (ValueError, TypeError):
+            pass
+
+        cat_str = _join_nonempty([
+            r.get("Policy Classification 1"),
+            r.get("Policy Classification 2"),
+            r.get("Policy Classification 3"),
+        ])
+        code_str = _fw_code_str([
+            r.get("Policy Code 1"), r.get("Policy Code 2"), r.get("Policy Code 3"),
+        ])
+        commodities = [_s(r.get(c)) for c in commodity_cols]
+        commodities = [c for c in commodities if c]
+        source_links = [_s(r.get(c)) for c in source_link_cols]
+        source_links = [c for c in source_links if c]
+
+        init = _date_str(r.get("Initial Date"))
+        rows.append({
+            "id":                      fapda_id,
+            "db":                      "FAPDA_decisions",
+            "country":                 _s(r.get("Country")),
+            "iso":                     None,  # not in this export; filled from lookup
+            "policy_description":      cat_str,  # best short title available
+            "policydecision_details":  _s(r.get("Description")),
+            "initialdate":             init,
+            "y_start":                 _year(init),
+            "y_end":                   _year(r.get("End Date")),
+            "FAPDA_region":            _s(r.get("Region")),
+            "FAPDA_subregion":         _s(r.get("Sub Region")),
+            "policydirection":         _s(r.get("Policy Direction")),
+            "policyphase":             _s(r.get("Policy Phase")),
+            "term":                    _s(r.get("Term")),
+            "contextoradditionalinfo": _s(r.get("Context or Additional Info")),
+            "decision_making_institution": _s(r.get("Decision Making Institution")),
+            "budget":                  _s(r.get("Budget")),
+            "beneficiaries":           _s(r.get("Beneficiaries")),
+            "policycategorycode":      code_str,
+            "policycategory":          cat_str,
+            "foodsecuritydimension":   _s(r.get("Food Security Dimension")),
+            "g20_codes":               _pipe_codes(r.get("G20 Policy Basket")),
+            "commodity1":              commodities[0] if len(commodities) > 0 else None,
+            "commodity2":              commodities[1] if len(commodities) > 1 else None,
+            "commodity3":              commodities[2] if len(commodities) > 2 else None,
+            "additionalcommodities":   "|".join(commodities[3:]) or None,
+            "source1name":             _s(r.get("Source")),
+            "source1link":             source_links[0] if len(source_links) > 0 else None,
+            "source2link":             source_links[1] if len(source_links) > 1 else None,
+            "source3link":             source_links[2] if len(source_links) > 2 else None,
+            "url":                     _s(r.get("Url")),
+        })
+
+    df = pd.DataFrame(rows)
+    print(f"  → {len(df):,} decision rows")
+    return df
+
+
+def load_fapda_frameworks_xlsx(path: Path) -> pd.DataFrame:
+    """Parse the new policy_frameworks.xlsx export into the canonical schema."""
+    print(f"Reading FAPDA frameworks xlsx: {path.name} …")
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        raw = pd.read_excel(path, engine="openpyxl")
+
+    code_cols = [f"Policy Category Code {i}" for i in range(1, 7)]
+    source_link_cols = [f"Source Link {i}" for i in range(1, 7)]
+
+    rows: list[dict[str, Any]] = []
+    for _, r in raw.iterrows():
+        fw_id = _s(r.get("ID"))
+        if not fw_id:
+            continue
+        try:
+            fw_id = str(int(float(fw_id)))
+        except (ValueError, TypeError):
+            pass
+
+        source_links = [_s(r.get(c)) for c in source_link_cols]
+        source_links = [c for c in source_links if c]
+
+        init = _date_str(r.get("Date of Adoption"))
+        rows.append({
+            "id":                         fw_id,
+            "db":                         "FAPDA_F",
+            "country":                    _s(r.get("Country")),
+            "iso":                        _s(r.get("ISO3")),
+            "policy_description":         _s(r.get("Title")),
+            "policydecision_details":     _s(r.get("Description")),
+            "initialdate":                init,
+            "y_start":                    _year(r.get("From Date")) or _year(init),
+            "y_end":                      _year(r.get("To Date")),
+            "FAPDA_region":               _s(r.get("Region")),
+            "FAPDA_subregion":            _s(r.get("Sub-Region")),
+            "policydirection":            _s(r.get("Document Type")),
+            "contextoradditionalinfo":    _s(r.get("Additional Info")),
+            "policycategorycode":         _fw_code_str([r.get(c) for c in code_cols]),
+            "policycategory":             _pipe_codes(r.get("Policy Category")),
+            "sdg_codes":                  _pipe_codes(r.get("SDGs")),
+            "roadmap_codes":              _pipe_codes(r.get("FAO Global Roadmap")),
+            "g20_codes":                  _pipe_codes(r.get("G20 Policy Basket")),
+            "quipd":                      _s(r.get("QUIPD Score")),
+            "source1name":                _s(r.get("Source")),
+            "source1link":                source_links[0] if len(source_links) > 0 else None,
+            "source2link":                source_links[1] if len(source_links) > 1 else None,
+            "source3link":                source_links[2] if len(source_links) > 2 else None,
+            "url":                        _s(r.get("Url")),
+        })
+
+    df = pd.DataFrame(rows)
+    print(f"  → {len(df):,} framework rows")
+    return df
+
+
+# ---------------------------------------------------------------------------
 # GIFNA
 # ---------------------------------------------------------------------------
 

@@ -1,5 +1,12 @@
 """
-Extract policy data from FAPDA's public web endpoints.
+Extract policy data from FAPDA's public export API.
+
+June 2026: FAO replaced the old DataTables JSON API
+(https://fapda.apps.fao.org/fapda/...searchpolicies, now permanently dead)
+with a Next.js site backed by a Google Cloud Run API. The site's "Download
+results" button hits a single export endpoint that returns the whole dataset
+as one xlsx — the same file a user downloads from the website. This fetcher
+uses that endpoint directly: no pagination, no window bisection.
 
 Usage:
     python fetch_fapda_data.py
@@ -9,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,345 +24,170 @@ from typing import Any
 import requests
 
 
-DEFAULT_BASE_URL = "https://fapda.apps.fao.org/fapda/"
-DEFAULT_OUTPUT_DIR = Path("data/raw/fapda")
-# Floor for the adaptive window halving in _fetch_window.
-MIN_PAGE_SIZE = 25
+# Google Cloud Run backend that powers https://fapda.apps.fao.org/
+DEFAULT_BASE_URL = "https://fao-fapda-api-866794018434.europe-west1.run.app"
+DEFAULT_OUTPUT_DIR = Path("data/fapda")
+
+# Headers the website sends; the backend is CORS-scoped to the FAPDA origin.
+_REQUEST_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,*/*",
+    "Origin": "https://fapda.apps.fao.org",
+    "Referer": "https://fapda.apps.fao.org/",
+    "User-Agent": "FSPD-FAPDA-ETL/2.0",
+}
+
+# xlsx files are zip archives: they always start with the "PK" magic bytes.
+_XLSX_MAGIC = b"PK"
+_XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 @dataclass(frozen=True)
 class EndpointSpec:
-    name: str
-    path: str
-    search_fields: tuple[str, ...]
+    name: str            # output file stem
+    resource: str        # API resource path segment
+    output_name: str     # data file name (without extension handled below)
 
 
 DECISIONS_ENDPOINT = EndpointSpec(
     name="policy_decisions",
-    path="policydecision/searchpolicies",
-    search_fields=(
-        "countryIds",
-        "subregionIds",
-        "policyMeasureCodes",
-        "foodSecIds",
-        "commodityCodes",
-        "policyDecisionG20Ids",
-        "initialFromDate",
-        "includeEmptyInitialDate",
-        "initialToDate",
-        "freeText",
-    ),
+    resource="policy-decision",
+    output_name="fapda_policy_decisions",
 )
 
 FRAMEWORKS_ENDPOINT = EndpointSpec(
     name="policy_frameworks",
-    path="policyframeworks/",
-    search_fields=(
-        "countryIds",
-        "subregionIds",
-        "policyFrameworkClassificationIds",
-        "initialFromDate",
-        "policyFrameworkSDGIds",
-        "policyFrameworkG20Ids",
-        "policyFrameworkRoadmapIds",
-        "selectedQUIPD",
-        "includeEmptyInitialDate",
-        "initialToDate",
-        "freeText",
-    ),
+    resource="policy-framework",
+    output_name="fapda_policy_frameworks",
 )
 
 
 class FAPDAClient:
-    def __init__(
-        self,
-        base_url: str,
-        timeout: int = 60,
-        max_retries: int = 5,
-        retry_backoff: float = 1.5,
-    ):
-        self.base_url = base_url.rstrip("/") + "/"
+    def __init__(self, base_url: str, timeout: int = 180, max_retries: int = 3):
+        self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.max_retries = max_retries
-        self.retry_backoff = retry_backoff
         self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "User-Agent": "FSPD-FAPDA-ETL/1.0",
-                "Accept": "application/json",
-            }
-        )
-        # Offsets of records skipped because the server cannot serialize
-        # them; reset per fetch_all() call, surfaced in the export summary.
-        self.skipped_offsets: list[int] = []
+        self.session.headers.update(_REQUEST_HEADERS)
 
-    def _request_json(
-        self, path: str, params: dict[str, Any], max_retries: int | None = None
-    ) -> dict[str, Any]:
-        url = self.base_url + path
-        last_error: Exception | None = None
-        retries = self.max_retries if max_retries is None else max_retries
+    def _api_url(self, resource: str, suffix: str = "") -> str:
+        return f"{self.base_url}/api/v1/tool/{resource}{suffix}"
 
-        for attempt in range(1, retries + 1):
-            try:
-                response = self.session.get(url, params=params, timeout=self.timeout)
-                response.raise_for_status()
-                # The server intermittently truncates large responses; an
-                # incomplete body surfaces here as a JSON decode error, which
-                # is retryable like any transient failure.
-                return response.json()
-            except (requests.RequestException, ValueError) as exc:
-                last_error = exc
-                if attempt == retries:
-                    break
-                wait = min(self.retry_backoff ** attempt, 30.0)
-                print(
-                    f"[fapda] request failed (attempt {attempt}/{retries}, "
-                    f"start={params.get('start')}, length={params.get('length')}): "
-                    f"{type(exc).__name__}; retrying in {wait:.1f}s"
-                )
-                time.sleep(wait)
-
-        raise RuntimeError(f"Failed to fetch {url}") from last_error
-
-    def _fetch_window(
-        self, spec: EndpointSpec, start: int, length: int, draw: int,
-        descending: bool = False,
-    ) -> dict[str, Any]:
-        """Fetch one pagination window, recursively halving the window size
-        when the server persistently fails on it. Two failure modes are
-        handled: truncated large responses (smaller windows succeed) and
-        poisoned records the server's serializer crashes on (the response is
-        a 200 with a truncated body and an embedded 500 stack trace) — those
-        are isolated by bisection and skipped one record at a time.
-
-        `descending` marks recursive calls below a window that already failed
-        persistently: the failure is established, so sub-windows probe with a
-        reduced retry budget instead of repeating the full retry/backoff dance
-        at every bisection level. Top-level windows and the final
-        single-record verdicts always use the full budget, so transient
-        network errors cannot trigger bisection or skip a healthy record."""
-        params = self._build_params(spec, start=start, length=length, draw=draw)
-        retries = min(2, self.max_retries) if descending else None
+    def fetch_total(self, spec: EndpointSpec) -> int | None:
+        """Best-effort record count from the JSON list endpoint (sanity check)."""
+        url = self._api_url(spec.resource)
         try:
-            return self._request_json(spec.path, params, max_retries=retries)
-        except RuntimeError:
-            if length == 1:
-                raise
-            if length <= MIN_PAGE_SIZE:
-                return self._fetch_singles(spec, start, length, draw)
-            half = length // 2
-            print(
-                f"[{spec.name}] window at offset {start} (length {length}) keeps "
-                f"failing; splitting into windows of {half}"
+            resp = self.session.post(
+                url, params={"page": 1, "per_page": 1}, json={}, timeout=self.timeout
             )
-            first = self._fetch_window(spec, start, half, draw, descending=True)
-            second = self._fetch_window(spec, start + half, length - half, draw,
-                                        descending=True)
-            merged = {key: value for key, value in first.items() if key != "ResourceList"}
-            merged["ResourceList"] = (first.get("ResourceList") or []) + (
-                second.get("ResourceList") or []
-            )
-            return merged
+            resp.raise_for_status()
+            payload = resp.json()
+            total = payload.get("total")
+            return int(total) if total is not None else None
+        except (requests.RequestException, ValueError):
+            return None
 
-    def _fetch_singles(
-        self, spec: EndpointSpec, start: int, length: int, draw: int
-    ) -> dict[str, Any]:
-        """Last resort for a poisoned window: fetch records one at a time and
-        skip only the ones the server cannot serialize."""
-        merged: dict[str, Any] | None = None
-        records: list[dict[str, Any]] = []
-        for offset in range(start, start + length):
-            params = self._build_params(spec, start=offset, length=1, draw=draw)
+    def download_xlsx(self, spec: EndpointSpec, output_path: Path) -> int:
+        """Stream the full export to output_path. Fail fast if it is not an
+        xlsx. Returns the byte size written."""
+        url = self._api_url(spec.resource, "/download")
+        last_error: Exception | None = None
+        for attempt in range(1, self.max_retries + 1):
             try:
-                payload = self._request_json(spec.path, params)
+                with self.session.post(
+                    url, json={}, timeout=self.timeout, stream=True
+                ) as resp:
+                    resp.raise_for_status()
+                    content_type = resp.headers.get("Content-Type", "")
+                    chunks = resp.iter_content(chunk_size=65536)
+                    first = next(chunks, b"")
+                    if not first.startswith(_XLSX_MAGIC):
+                        raise RuntimeError(
+                            f"FAPDA export did not return an xlsx (got "
+                            f"'{content_type or 'unknown content-type'}'); the API "
+                            f"may have moved again — see docs/fetching.md"
+                        )
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    size = 0
+                    with output_path.open("wb") as fh:
+                        fh.write(first)
+                        size += len(first)
+                        for chunk in chunks:
+                            fh.write(chunk)
+                            size += len(chunk)
+                    return size
             except RuntimeError:
-                self.skipped_offsets.append(offset)
+                # Wrong content (not an xlsx) is not transient — fail loudly.
+                raise
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt == self.max_retries:
+                    break
                 print(
-                    f"[{spec.name}] WARNING: skipping record at offset {offset} — "
-                    f"the server returns a corrupt response for it (500 inside a 200)"
+                    f"[{spec.name}] download failed "
+                    f"(attempt {attempt}/{self.max_retries}): "
+                    f"{type(exc).__name__}; retrying"
                 )
-                continue
-            if merged is None:
-                merged = {k: v for k, v in payload.items() if k != "ResourceList"}
-            records.extend(payload.get("ResourceList") or [])
-        if merged is None:
-            # Every single record in the window failed: that is not one bad
-            # record but a broken endpoint — fail the run.
-            raise RuntimeError(
-                f"all {length} single-record fetches failed at offset {start} "
-                f"for {spec.name}"
-            )
-        merged["ResourceList"] = records
-        return merged
-
-    @staticmethod
-    def _build_params(spec: EndpointSpec, start: int, length: int, draw: int) -> dict[str, Any]:
-        params: dict[str, Any] = {
-            "draw": draw,
-            "start": start,
-            "length": length,
-            "idPolicy": "",
-        }
-        for field in spec.search_fields:
-            params[f"policySearch[{field}]"] = ""
-        return params
-
-    def fetch_all(
-        self,
-        spec: EndpointSpec,
-        page_size: int,
-        limit: int | None = None,
-        sleep_seconds: float = 0.0,
-        skip_on_error: bool = False,
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        if page_size <= 0:
-            raise ValueError("page_size must be > 0")
-
-        self.skipped_offsets = []
-        records: list[dict[str, Any]] = []
-        metadata: dict[str, Any] = {}
-        expected_total: int | None = None
-        start = 0
-        draw = 1
-
-        while True:
-            if limit is not None and start >= limit:
-                break
-
-            length = page_size if limit is None else min(page_size, limit - start)
-            try:
-                payload = self._fetch_window(spec, start=start, length=length, draw=draw)
-            except RuntimeError as exc:
-                if not skip_on_error:
-                    raise
-                print(f"[{spec.name}] WARNING: skipping page at offset {start} ({exc})")
-                start += page_size
-                draw += 1
-                continue
-            batch = payload.get("ResourceList")
-            if not isinstance(batch, list):
-                raise RuntimeError(
-                    f"Unexpected response format for {spec.name}: 'ResourceList' is not a list"
-                )
-
-            if expected_total is None:
-                total_value = payload.get("recordsFiltered", payload.get("recordsTotal", 0))
-                expected_total = int(total_value) if total_value is not None else 0
-                metadata = {
-                    key: value
-                    for key, value in payload.items()
-                    if key not in {"ResourceList"}
-                }
-
-            if not batch:
-                break
-
-            records.extend(batch)
-            start += len(batch)
-            draw += 1
-
-            print(f"[{spec.name}] fetched {start}" + (f"/{expected_total}" if expected_total else ""))
-
-            if limit is not None and start >= limit:
-                records = records[:limit]
-                break
-
-            if expected_total and start >= expected_total:
-                break
-
-            if sleep_seconds > 0:
-                time.sleep(sleep_seconds)
-
-        return records, metadata
+        raise RuntimeError(f"Failed to download FAPDA {spec.name} from {url}") from last_error
 
 
-def deduplicate_by_id(records: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
-    deduped: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    removed = 0
-
-    for record in records:
-        record_id = record.get("id")
-        if record_id is None:
-            deduped.append(record)
-            continue
-
-        record_id_str = str(record_id)
-        if record_id_str in seen_ids:
-            removed += 1
-            continue
-        seen_ids.add(record_id_str)
-        deduped.append(record)
-
-    return deduped, removed
+def _row_count(path: Path) -> int:
+    import pandas as pd
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return len(pd.read_excel(path, engine="openpyxl"))
 
 
-def write_jsonl(records: list[dict[str, Any]], output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
-def write_flat_csv(records: list[dict[str, Any]], output_path: Path) -> None:
-    try:
-        import pandas as pd
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "CSV export requires pandas. Install dependencies or run with --no_csv."
-        ) from exc
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    dataframe = pd.json_normalize(records, sep="_")
-    dataframe.to_csv(output_path, index=False)
+def _truncate_xlsx(path: Path, limit: int) -> int:
+    """Keep only the first `limit` data rows (for smoke tests). Returns new row count."""
+    import pandas as pd
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        df = pd.read_excel(path, engine="openpyxl")
+    df = df.head(limit)
+    df.to_excel(path, index=False, engine="openpyxl")
+    return len(df)
 
 
 def run_export(
     client: FAPDAClient,
     endpoint: EndpointSpec,
     output_dir: Path,
-    page_size: int,
     limit: int | None,
-    sleep_seconds: float,
     write_csv: bool,
-    skip_on_error: bool = False,
+    fetch_total: bool = True,
 ) -> dict[str, Any]:
-    records, api_metadata = client.fetch_all(
-        endpoint,
-        page_size=page_size,
-        limit=limit,
-        sleep_seconds=sleep_seconds,
-        skip_on_error=skip_on_error,
-    )
-    records, duplicates_removed = deduplicate_by_id(records)
+    output_path = output_dir / f"{endpoint.output_name}.xlsx"
+    total = client.fetch_total(endpoint) if fetch_total else None
+    size = client.download_xlsx(endpoint, output_path)
 
-    jsonl_path = output_dir / f"fapda_{endpoint.name}.jsonl"
-    write_jsonl(records, jsonl_path)
+    rows = _row_count(output_path)
+    if limit is not None and rows > limit:
+        rows = _truncate_xlsx(output_path, limit)
+        size = output_path.stat().st_size
 
     csv_path: Path | None = None
     if write_csv:
-        csv_path = output_dir / f"fapda_{endpoint.name}.csv"
-        write_flat_csv(records, csv_path)
+        import pandas as pd
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            pd.read_excel(output_path, engine="openpyxl").to_csv(
+                output_dir / f"{endpoint.output_name}.csv", index=False
+            )
+        csv_path = output_dir / f"{endpoint.output_name}.csv"
 
     summary: dict[str, Any] = {
-        "endpoint": endpoint.path,
-        "records": len(records),
-        "duplicates_removed": duplicates_removed,
-        "jsonl_path": str(jsonl_path),
-        "api_records_total": api_metadata.get("recordsTotal"),
-        "api_records_filtered": api_metadata.get("recordsFiltered"),
-        "skipped_offsets": list(client.skipped_offsets),
+        "endpoint": client._api_url(endpoint.resource, "/download"),
+        "output_path": str(output_path),
+        "bytes": size,
+        "rows": rows,
+        "api_total": total,
     }
-    if client.skipped_offsets:
-        print(
-            f"[{endpoint.name}] WARNING: {len(client.skipped_offsets)} record(s) "
-            f"skipped (server-side serialization errors) at offsets: "
-            f"{client.skipped_offsets}"
-        )
     if csv_path is not None:
         summary["csv_path"] = str(csv_path)
-
     return summary
 
 
@@ -375,59 +206,45 @@ def parse_args() -> argparse.Namespace:
         help=f"Directory for exported files (default: {DEFAULT_OUTPUT_DIR}).",
     )
     parser.add_argument(
-        "--page_size",
-        type=int,
-        default=250,
-        help="Pagination size per request (default: 250; framework records "
-             "are ~25 KB each and the server truncates very large responses).",
-    )
-    parser.add_argument(
         "--limit",
         type=int,
         default=None,
-        help="Optional cap on records per resource.",
+        help="Optional cap on rows per resource (truncates the downloaded xlsx; for smoke runs).",
     )
     parser.add_argument(
         "--base_url",
         type=str,
         default=DEFAULT_BASE_URL,
-        help=f"FAPDA base URL (default: {DEFAULT_BASE_URL}).",
+        help=f"FAPDA Cloud Run base URL (default: {DEFAULT_BASE_URL}).",
     )
     parser.add_argument(
         "--timeout",
         type=int,
-        default=60,
-        help="HTTP timeout in seconds (default: 60).",
+        default=180,
+        help="HTTP timeout in seconds (default: 180).",
     )
     parser.add_argument(
         "--max_retries",
         type=int,
-        default=5,
-        help="Retry count on transient HTTP/JSON errors (default: 5).",
-    )
-    parser.add_argument(
-        "--sleep_seconds",
-        type=float,
-        default=0.0,
-        help="Optional sleep between paginated requests.",
+        default=3,
+        help="Retry count on transient HTTP errors (default: 3).",
     )
     parser.add_argument(
         "--no_csv",
         action="store_true",
-        help="Skip flattened CSV exports and write only JSONL.",
+        help="Skip the flattened CSV copy and write only the xlsx.",
     )
-    parser.add_argument(
-        "--skip_on_error",
-        action="store_true",
-        help="Skip pages that fail JSON parsing instead of aborting (e.g. corrupted server response).",
-    )
+    # Accepted for backwards compatibility with callers; no longer used by the
+    # one-shot export API.
+    parser.add_argument("--page_size", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--sleep_seconds", type=float, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--skip_on_error", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
 
-    endpoints: list[EndpointSpec]
     if args.resource == "decisions":
         endpoints = [DECISIONS_ENDPOINT]
     elif args.resource == "frameworks":
@@ -449,15 +266,13 @@ def main() -> None:
             client=client,
             endpoint=endpoint,
             output_dir=args.output_dir,
-            page_size=args.page_size,
             limit=args.limit,
-            sleep_seconds=args.sleep_seconds,
             write_csv=not args.no_csv,
-            skip_on_error=args.skip_on_error,
         )
         all_summaries[endpoint.name] = summary
         print(
-            f"[{endpoint.name}] saved {summary['records']} records to {summary['jsonl_path']}"
+            f"[{endpoint.name}] saved {summary['rows']} rows "
+            f"({summary['bytes']:,} bytes) to {summary['output_path']}"
         )
 
     metadata_path = args.output_dir / "fapda_etl_metadata.json"
@@ -468,7 +283,6 @@ def main() -> None:
                 "fetched_at_utc": run_started_at,
                 "base_url": args.base_url,
                 "resource": args.resource,
-                "page_size": args.page_size,
                 "limit": args.limit,
                 "summaries": all_summaries,
             },

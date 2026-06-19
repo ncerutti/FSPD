@@ -8,8 +8,8 @@ dependencies; run with the ETL venv (`.venv-fetch`).
 
 ```
 fetch_all_data.py (weekly, automated)
-  ├─ FAPDA  → data/fapda/fapda_policy_decisions.jsonl
-  │           data/fapda/fapda_policy_frameworks.jsonl
+  ├─ FAPDA  → data/fapda/fapda_policy_decisions.xlsx
+  │           data/fapda/fapda_policy_frameworks.xlsx
   ├─ PINE   → data/pine/pine_instruments.csv
   └─ GIFNA  → data/gifna/gifna_map_data_records.jsonl   (freshness signal only)
 
@@ -18,7 +18,7 @@ manual, when freshness signal fires
 
 src/pipeline/update_dataset.py
   ├─ transform each source to the canonical 49-col schema
-  │    FAPDA JSONL  → transform.py (transform_decision / transform_framework)
+  │    FAPDA xlsx   → build_dataset.load_fapda_decisions_xlsx / _frameworks_xlsx
   │    PINE CSV     → build_dataset.load_pine  (food-domain filter)
   │    GIFNA CSV    → build_dataset.load_gifna
   ├─ dedupe on (db, id) against --existing (data/FSPD_new.parquet)
@@ -62,16 +62,16 @@ summary (`"skipped": reason`) — one failed fetcher does not block the rest.
 
 | db               | id                          | source of the id                               |
 |------------------|-----------------------------|------------------------------------------------|
-| FAPDA_decisions  | FAPDA decision id (numeric) | JSONL `id`; equals `policydecisionid=` in URLs  |
-| FAPDA_F          | FAPDA framework id (numeric)| JSONL `id`; equals `policyframeworkid=` in URLs |
+| FAPDA_decisions  | FAPDA decision id (numeric) | xlsx `ID` column; equals `policydecisionid=` in old URLs  |
+| FAPDA_F          | FAPDA framework id (numeric)| xlsx `ID` column; equals `policyframeworkid=` in old URLs |
 | GIFNA            | `Policy_Id`                 | manual search-export CSV                        |
 | PINE             | `InstrumentId`              | `pine_instruments.csv` / manual export          |
 
-The key is the pair `(db, id)` as strings. The JSONL path and the manual
-xls-export path produce the same FAPDA ids (verified on the 2026-05-16
-snapshot: 27,892/27,892 decisions and 13,693/13,693 frameworks matched), so
-dedupe works across both transform paths. `transform.py` labels decisions
-`db="FAPDA"`; `update_dataset.py` normalises that to `FAPDA_decisions`.
+The key is the pair `(db, id)` as strings. The new Cloud Run xlsx export's
+`ID` column equals the existing FAPDA ids in the canonical dataset (verified
+2026-06-19: of 28,342 exported decisions, 27,828 already present and 514 new;
+frameworks 13,893 present, 2 new), so dedupe is stable across the API
+migration.
 
 ## GIFNA manual refresh procedure
 

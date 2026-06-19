@@ -1,8 +1,8 @@
 """
 Incremental update pipeline: fetcher outputs -> new rows to classify.
 
-Takes the latest fetcher outputs (FAPDA JSONL, PINE instruments CSV, optional
-GIFNA manual CSV), transforms each source to the canonical 49-column schema
+Takes the latest fetcher outputs (FAPDA xlsx exports, PINE instruments CSV,
+optional GIFNA manual CSV), transforms each source to the canonical 49-column schema
 (shared with build_dataset.py), deduplicates against the existing canonical
 dataset on the stable per-source (db, id) key, and writes:
 
@@ -13,9 +13,9 @@ dataset on the stable per-source (db, id) key, and writes:
   3. a JSON summary with per-source fetched/new/duplicate counts and a GIFNA
      freshness signal — printed and saved for the GitHub Actions PR body.
 
-Dedupe keys: FAPDA decisions/frameworks use the FAPDA record id (same id the
-record URLs carry as policydecisionid/policyframeworkid, so the JSONL path and
-the manual-export path agree); PINE uses InstrumentId; GIFNA uses Policy_Id.
+Dedupe keys: FAPDA decisions/frameworks use the FAPDA record id (the ID column in the
+FAPDA xlsx export, which equals the existing FAPDA ids in the canonical
+dataset); PINE uses InstrumentId; GIFNA uses Policy_Id.
 
 Pure pandas — no ML imports. Missing source files are skipped (and flagged in
 the summary), so one failed fetcher does not block the rest.
@@ -40,12 +40,17 @@ import pandas as pd
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
-from src.pipeline.build_dataset import CANONICAL_COLUMNS, load_gifna, load_pine  # noqa: E402
-from src.pipeline.transform import _read_jsonl, transform_decision, transform_framework  # noqa: E402
+from src.pipeline.build_dataset import (  # noqa: E402
+    CANONICAL_COLUMNS,
+    load_fapda_decisions_xlsx,
+    load_fapda_frameworks_xlsx,
+    load_gifna,
+    load_pine,
+)
+from src.pipeline.transform import _read_jsonl  # noqa: E402  (GIFNA freshness only)
 
-# transform.py labels decisions "FAPDA"; the canonical dataset uses
-# "FAPDA_decisions" (build_dataset.py). Normalise so the (db, id) dedupe key
-# matches across both transform paths.
+# Legacy transform.py labelled decisions "FAPDA"; the new xlsx loaders already
+# emit "FAPDA_decisions". Kept as a no-op safety net for the (db, id) key.
 _DB_NORMALISE = {"FAPDA": "FAPDA_decisions"}
 
 _NUMERIC_COLS = ("y_start", "y_end", "gendermainstreamed", "nutritionmainstreamed")
@@ -74,12 +79,14 @@ def _conform(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_fapda_jsonl(path: Path, kind: str) -> pd.DataFrame:
-    """Transform a FAPDA JSONL file (decisions or frameworks) to canonical schema."""
-    transformer = transform_decision if kind == "decisions" else transform_framework
-    records = _read_jsonl(path)
-    print(f"Transforming {len(records):,} FAPDA {kind} from {path.name} …")
-    return _conform(pd.DataFrame([transformer(r) for r in records]))
+def load_fapda_xlsx(path: Path, kind: str) -> pd.DataFrame:
+    """Load a FAPDA xlsx export (decisions or frameworks) to canonical schema.
+
+    Uses the new Cloud Run "Download results" loaders in build_dataset.py
+    (FAO replaced the old DataTables JSON API with a Next.js site in June 2026).
+    """
+    loader = load_fapda_decisions_xlsx if kind == "decisions" else load_fapda_frameworks_xlsx
+    return _conform(loader(path))
 
 
 def _load_sources(args: argparse.Namespace) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
@@ -99,8 +106,8 @@ def _load_sources(args: argparse.Namespace) -> tuple[dict[str, pd.DataFrame], di
         except Exception as exc:  # noqa: BLE001 — isolate per-source failures
             skipped[db] = f"load failed: {exc}"
 
-    _try("FAPDA_decisions", args.fapda_decisions, lambda p: load_fapda_jsonl(p, "decisions"))
-    _try("FAPDA_F", args.fapda_frameworks, lambda p: load_fapda_jsonl(p, "frameworks"))
+    _try("FAPDA_decisions", args.fapda_decisions, lambda p: load_fapda_xlsx(p, "decisions"))
+    _try("FAPDA_F", args.fapda_frameworks, lambda p: load_fapda_xlsx(p, "frameworks"))
     _try("PINE", args.pine_instruments, lambda p: _conform(load_pine(p)))
     _try("GIFNA", args.gifna_csv, lambda p: _conform(load_gifna(p)))
     return sources, skipped
@@ -279,9 +286,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Incremental OpenFPD update: transform fetcher outputs, dedupe, emit new rows."
     )
     parser.add_argument("--fapda_decisions", type=Path,
-                        default=REPO / "data/fapda/fapda_policy_decisions.jsonl")
+                        default=REPO / "data/fapda/fapda_policy_decisions.xlsx")
     parser.add_argument("--fapda_frameworks", type=Path,
-                        default=REPO / "data/fapda/fapda_policy_frameworks.jsonl")
+                        default=REPO / "data/fapda/fapda_policy_frameworks.xlsx")
     parser.add_argument("--pine_instruments", type=Path,
                         default=REPO / "data/pine/pine_instruments.csv")
     parser.add_argument("--gifna_csv", type=Path, default=None,

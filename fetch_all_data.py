@@ -75,9 +75,9 @@ def read_metadata_summary(metadata_path: Path) -> list[str]:
     except (OSError, ValueError):
         return lines
 
-    # FAPDA: {"summaries": {name: {records, jsonl_path, ...}}}
+    # FAPDA: {"summaries": {name: {rows, output_path, ...}}}
     for name, summary in (meta.get("summaries") or {}).items():
-        lines.append(f"{name}: {summary.get('records')} records -> {summary.get('jsonl_path')}")
+        lines.append(f"{name}: {summary.get('rows')} rows -> {summary.get('output_path')}")
     # GIFNA: {"assets": {name: {records, jsonl_path, ...}}}
     for name, summary in (meta.get("assets") or {}).items():
         if isinstance(summary, dict):

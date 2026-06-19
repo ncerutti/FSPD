@@ -16,22 +16,44 @@ source failed — suitable for a scheduled GitHub Actions job.
 
 ## FAPDA (FAO) — automation: FULL
 
-- Endpoint: `https://fapda.apps.fao.org/fapda/` (DataTables-style JSON API,
-  paginated; policy decisions and policy frameworks resources).
+> **June 2026 — API migration.** FAO replaced the old FAPDA site and its
+> DataTables-style JSON API (`https://fapda.apps.fao.org/fapda/...searchpolicies`,
+> now permanently dead) with a Next.js site backed by a Google Cloud Run API.
+> The fetcher was rewritten to use the same "Download results" export a user
+> gets from the website. The old pagination / window-bisection / single-record
+> skip machinery (for the dead API's truncation and "poison record" bugs) is
+> gone.
+
+- Backend: `https://fao-fapda-api-866794018434.europe-west1.run.app`
+  (publicly reachable Cloud Run host powering `https://fapda.apps.fao.org/`).
+- Endpoints (one request = the whole dataset; no pagination):
+  - `POST {host}/api/v1/tool/policy-decision/download`
+  - `POST {host}/api/v1/tool/policy-framework/download`
+  - Empty JSON body `{}`; headers `Content-Type: application/json`,
+    `Origin: https://fapda.apps.fao.org`, `Referer: https://fapda.apps.fao.org/`.
+  - Returns a full `.xlsx` (`Content-Type:
+    application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`).
+    Decisions ~9.5 MB, frameworks ~12 MB.
+  - (A JSON list endpoint `POST {host}/api/v1/tool/policy-decision?page=&per_page=`
+    is hit with `per_page=1` only to record `total` in the metadata as a
+    sanity check; the xlsx is the data source.)
 - Fetcher: `fetch_fapda_data.py` / `src/pipeline/fapda_etl.py`.
-- Output: `data/fapda/fapda_policy_decisions.jsonl`,
-  `data/fapda/fapda_policy_frameworks.jsonl` (+ CSV exports,
-  `fapda_etl_metadata.json`).
-- Volume: ~28,400 decisions + ~13,900 frameworks; the full pull is large
-  (~800 MB) — use `--limit` for tests.
-- Robustness: the server intermittently truncates large responses and
-  occasionally cannot serialize a specific record at all (HTTP 200 with a
-  truncated body containing an embedded 500 stack trace — e.g. framework id
-  20626, June 2026). The fetcher retries with backoff, recursively halves
-  failing windows, and as a last resort fetches records one at a time,
-  skipping only the poisoned ones. Skipped offsets are listed with a WARNING
-  in the log and under `skipped_offsets` in `fapda_etl_metadata.json`; they
-  are retried from scratch on the next run.
+- Output: `data/fapda/fapda_policy_decisions.xlsx`,
+  `data/fapda/fapda_policy_frameworks.xlsx` (+ optional CSV copies unless
+  `--no_csv`, and `fapda_etl_metadata.json` with per-resource output path,
+  byte size, row count, and the list-endpoint `total`).
+- Volume: ~28,300 decisions + ~13,900 frameworks.
+- Fail-fast: the fetcher streams the response and checks the leading `PK`
+  magic bytes (xlsx files are zip archives). If the response is not an xlsx it
+  raises immediately ("FAPDA export did not return an xlsx … the API may have
+  moved again — see docs/fetching.md") rather than writing a corrupt file.
+  Transient HTTP errors are retried; wrong content type is not.
+- Loaders: `build_dataset.load_fapda_decisions_xlsx` /
+  `load_fapda_frameworks_xlsx` parse the exports straight into the canonical
+  schema (no JSONL / transform.py step). Decisions carry no ISO column; the
+  update pipeline fills it from existing rows by country.
+- `--limit N` truncates the downloaded xlsx to the first N rows (re-saved with
+  pandas) for smoke runs.
 - Run alone:
   `.venv-fetch/bin/python3 fetch_fapda_data.py --resource both --limit 50 --output_dir /tmp/fapda_smoke`
 

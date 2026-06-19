@@ -90,8 +90,8 @@ jobs:
           retention-days: 7
           if-no-files-found: error
           path: |
-            data/fapda/fapda_policy_decisions.jsonl
-            data/fapda/fapda_policy_frameworks.jsonl
+            data/fapda/fapda_policy_decisions.xlsx
+            data/fapda/fapda_policy_frameworks.xlsx
             data/fapda/fapda_etl_metadata.json
             data/pine/pine_instruments.csv
             data/pine/pine_etl_metadata.json
