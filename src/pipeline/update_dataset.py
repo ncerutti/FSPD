@@ -229,14 +229,19 @@ def update(args: argparse.Namespace) -> dict[str, Any]:
     run_tag = date.today().strftime("%Y%m%d")
     updates_dir = Path(args.updates_dir)
     new_rows_file: str | None = None
+    new_rows_csv: str | None = None
     if len(new_rows):
         updates_dir.mkdir(parents=True, exist_ok=True)
         new_rows_path = updates_dir / f"new_rows_{run_tag}.parquet"
         new_rows.to_parquet(new_rows_path, index=False)
         new_rows_file = str(new_rows_path)
+        new_rows_csv_path = updates_dir / f"new_rows_{run_tag}.csv"
+        new_rows.to_csv(new_rows_csv_path, index=False)
+        new_rows_csv = str(new_rows_csv_path)
         print(f"Wrote {len(new_rows):,} new rows -> {new_rows_path}")
+        print(f"Wrote {len(new_rows):,} new rows -> {new_rows_csv_path}")
     else:
-        print("No new rows — skipping new_rows parquet.")
+        print("No new rows — skipping new_rows parquet/csv.")
 
     combined = pd.concat([existing, new_rows], ignore_index=True) if len(new_rows) else existing
     output = Path(args.output)
@@ -251,6 +256,7 @@ def update(args: argparse.Namespace) -> dict[str, Any]:
         "sources": per_source,
         "new_rows_total": int(len(new_rows)),
         "new_rows_file": new_rows_file,
+        "new_rows_csv": new_rows_csv,
         "output": str(output),
         "output_rows": len(combined),
         "gifna_freshness": gifna_freshness(

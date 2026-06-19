@@ -180,6 +180,10 @@ jobs:
             --model_dir models \
             --input "${{ steps.update.outputs.new_rows_file }}" \
             --output "data/updates/new_rows_${RUN_TAG}_classified.parquet"
+          python -c "import pandas as pd, sys; \
+            pd.read_parquet(sys.argv[1]).to_csv(sys.argv[2], index=False)" \
+            "data/updates/new_rows_${RUN_TAG}_classified.parquet" \
+            "data/updates/new_rows_${RUN_TAG}_classified.csv"
 
       - name: Merge predictions into canonical dataset
         if: steps.update.outputs.new_rows != '0'

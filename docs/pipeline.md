@@ -26,6 +26,7 @@ src/pipeline/update_dataset.py
   ├─ enrich new rows (FAPDA_region / who_region from existing rows by ISO)
   └─ outputs
        data/updates/new_rows_<YYYYMMDD>.parquet   → classifier input
+       data/updates/new_rows_<YYYYMMDD>.csv       → same rows, human-readable
        --output (default data/FSPD_new.parquet)   → updated combined dataset
        data/updates/summary_<YYYYMMDD>.json       → counts for the PR body
 ```
