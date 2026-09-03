@@ -14,12 +14,19 @@ directly over plain HTTP (xhr-polling transport, no websockets needed):
   5. GET the download href   -> the CSV (tab-separated), while keeping the
                                 session alive with background polls
 
-Of the app's download handlers, "downloadcsv4" (Data > Subscheme data) and
-"downloadcsv3" (Data > Environmentally related tax revenue) work headlessly.
-"downloadcsv1" (Data > Instrument data) errors server-side without a real
-browser, so the instrument-level table is derived from the subscheme table
-by deduplicating on InstrumentId (instrument attributes are constant across
-subscheme rows; columns are identical apart from the extra SubSchemeId).
+Of the app's download handlers, "bysubscheme-downloadcsv4" (Data > Subscheme
+data) and "ertr-downloadcsv3" (Data > Environmentally related tax revenue)
+work headlessly. "generalinfo-downloadcsv1" (Data > Instrument data) errors
+server-side without a real browser, so the instrument-level table is derived
+from the subscheme table by deduplicating on InstrumentId (instrument
+attributes are constant across subscheme rows; columns are identical apart
+from the extra SubSchemeId).
+
+Since the late-August 2026 redeploy the app is built from Shiny modules, so
+every input/output id carries a module namespace prefix ("bysubscheme-",
+"ertr-", "generalinfo-"). If the fetch fails with "Server did not register
+download handler(s)", grep the app page for `downloadcsv` to find the current
+ids and update the constants below (see docs/fetching.md).
 
 Usage:
     python3 fetch_pine_data.py
@@ -46,8 +53,25 @@ DEFAULT_OUTPUT_DIR = Path("data/raw/pine")
 PINE_URL = "https://pinedatabase.oecd.org/"
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) FSPD-PINE-ETL/2.0"
 
-SUBSCHEME_DOWNLOAD = "downloadcsv4"  # Data > Subscheme data (instrument-level + SubSchemeId)
-ERTR_DOWNLOAD = "downloadcsv3"       # Data > Environmentally related tax revenue
+# Shiny module namespaces (module id + "-" + element id).
+SUBSCHEME_NS = "bysubscheme"  # Data > Subscheme data (instrument-level + SubSchemeId)
+ERTR_NS = "ertr"              # Data > Environmentally related tax revenue
+
+SUBSCHEME_DOWNLOAD = f"{SUBSCHEME_NS}-downloadcsv4"
+ERTR_DOWNLOAD = f"{ERTR_NS}-downloadcsv3"
+
+# Filter inputs the download handlers depend on. Without these the server
+# returns header-only CSVs (subscheme) or errors (instrument). "activity4"
+# is the "Include inactive instruments" radio (app default "No" = active
+# only); "Yes" keeps the full instrument set.
+DOWNLOAD_INPUTS: dict[str, Any] = {
+    f"{SUBSCHEME_NS}-dataset4": ["All"],
+    f"{SUBSCHEME_NS}-env_domain4": ["All"],
+    f"{SUBSCHEME_NS}-attr4": ["All"],
+    f"{SUBSCHEME_NS}-activity4": "Yes",
+    f"{ERTR_NS}-dataset3": ["All"],
+    f"{ERTR_NS}-env_domain3": ["All"],
+}
 
 REQUIRED_COLUMNS = ["InstrumentId", "CountryCode", "CountryName", "InstrumentType", "Status"]
 
@@ -118,13 +142,7 @@ class ShinySession:
             ".clientdata_url_hash": "",
             ".clientdata_pixelratio": 1,
             ".clientdata_allowDataUriScheme": True,
-            # Filter inputs the download handlers depend on. Without these the
-            # server returns header-only CSVs (subscheme) or errors (instrument).
-            "dataset4": ["All"],
-            "env_domain4": ["All"],
-            "attr4": ["All"],
-            "dataset3": ["All"],
-            "env_domain3": ["All"],
+            **DOWNLOAD_INPUTS,
         }
         for name in download_names:
             data[f".clientdata_output_{name}_hidden"] = False
@@ -136,7 +154,7 @@ class ShinySession:
         wanted = set(download_names)
         hrefs: dict[str, str] = {}
         deadline = time.time() + wait_seconds
-        pattern = re.compile(r"session/[0-9a-f]+/download/([A-Za-z0-9_]+)\?w=[0-9a-f]+")
+        pattern = re.compile(r"session/[0-9a-f]+/download/([A-Za-z0-9_\-]+)\?w=[0-9a-f]+")
         while time.time() < deadline and wanted - set(hrefs):
             response = self.session.post(f"{self.sock}/xhr", timeout=self.timeout + 10)
             if response.text.startswith("c"):
@@ -208,7 +226,7 @@ def fetch_downloads(
             hrefs = shiny.collect_download_hrefs(download_names)
             results: dict[str, dict[str, Any]] = {}
             for name in download_names:
-                raw_path = output_dir / f"pine_{name}_raw.tsv"
+                raw_path = output_dir / f"pine_{name}_raw.csv"
                 info = shiny.download(hrefs[name], raw_path)
                 info["raw_path"] = str(raw_path)
                 results[name] = info
@@ -223,12 +241,24 @@ def fetch_downloads(
     raise PINEFetchError(f"PINE fetch failed after {max_retries} attempts") from last_error
 
 
-def process_subschemes(raw_path: Path, output_dir: Path, min_rows: int) -> dict[str, Any]:
-    """Validate the subscheme TSV and derive the instrument-level CSV."""
+def _read_export(raw_path: Path):
+    """Read a PINE export, sniffing the delimiter.
+
+    The app historically served tab-separated files; since the August 2026
+    redeploy it serves comma-separated, quoted files with a UTF-8 BOM.
+    """
     import pandas as pd
 
+    with raw_path.open("r", encoding="utf-8-sig") as handle:
+        header = handle.readline()
+    sep = "\t" if header.count("\t") > header.count(",") else ","
+    return pd.read_csv(raw_path, sep=sep, dtype=str, low_memory=False, encoding="utf-8-sig")
+
+
+def process_subschemes(raw_path: Path, output_dir: Path, min_rows: int) -> dict[str, Any]:
+    """Validate the subscheme export and derive the instrument-level CSV."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    frame = pd.read_csv(raw_path, sep="\t", dtype=str, low_memory=False)
+    frame = _read_export(raw_path)
     missing = [c for c in REQUIRED_COLUMNS if c not in frame.columns]
     if missing:
         raise PINEFetchError(f"Subscheme download missing expected columns: {missing}")
@@ -257,10 +287,8 @@ def process_subschemes(raw_path: Path, output_dir: Path, min_rows: int) -> dict[
 
 
 def process_ertr(raw_path: Path, output_dir: Path) -> dict[str, Any]:
-    import pandas as pd
-
     output_dir.mkdir(parents=True, exist_ok=True)
-    frame = pd.read_csv(raw_path, sep="\t", dtype=str, low_memory=False)
+    frame = _read_export(raw_path)
     ertr_csv = output_dir / "pine_ertr.csv"
     frame.to_csv(ertr_csv, index=False)
     print(f"[pine:ertr] {len(frame):,} rows -> {ertr_csv}")

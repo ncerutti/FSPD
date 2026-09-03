@@ -484,7 +484,9 @@ _PINE_FOOD_DOMAINS = ["Domain_Fisheries", "Domain_Forests", "Domain_LandDegradat
 
 def load_pine(path: Path) -> pd.DataFrame:
     print(f"Reading PINE: {path.name} …")
-    raw = pd.read_csv(path, low_memory=False)
+    # Since the August 2026 app redeploy the export writes "..." for empty
+    # cells; treat it as missing so those fields stay null (as before).
+    raw = pd.read_csv(path, low_memory=False, na_values=["..."])
 
     # Food relevance filter
     food_mask = raw[_PINE_FOOD_DOMAINS].eq("Yes").any(axis=1)

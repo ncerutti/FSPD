@@ -67,21 +67,41 @@ source failed — suitable for a scheduled GitHub Actions job.
   Shiny/SockJS protocol over plain HTTP (xhr-polling, `requests` only):
   it opens a session, sends the Shiny `init` message, reads the
   server-registered download hrefs, and downloads the CSVs.
-- Working download handlers (headless): `downloadcsv4` (Data > Subscheme
-  data — instrument-level columns + `SubSchemeId`) and `downloadcsv3`
-  (Data > Environmentally related tax revenue, optional `--include_ertr`).
-  `downloadcsv1` (Data > Instrument data — the one matching the manual
-  export `data/pine/original/OECD-PINEVersion2026.csv`) errors server-side
-  without a real browser, so the instrument-level table is derived from the
-  subscheme table by deduplicating on `InstrumentId`.
+- The app is built from Shiny modules, so every input/output id carries a
+  module namespace prefix. Working download handlers (headless):
+  `bysubscheme-downloadcsv4` (Data > Subscheme data — instrument-level
+  columns + `SubSchemeId`) and `ertr-downloadcsv3` (Data > Environmentally
+  related tax revenue, optional `--include_ertr`).
+  `generalinfo-downloadcsv1` (Data > Instrument data — the one matching the
+  manual export `data/pine/original/OECD-PINEVersion2026.csv`) errors
+  server-side without a real browser, so the instrument-level table is
+  derived from the subscheme table by deduplicating on `InstrumentId`.
+- The `init` message also sets the filter inputs the handlers depend on
+  (`bysubscheme-{dataset4,env_domain4,attr4}` = All, and
+  `bysubscheme-activity4` = Yes, i.e. "Include inactive instruments"; the
+  app default "No" would drop ended/discontinued instruments).
 - Output: `data/pine/pine_instruments.csv` (instrument level, same schema
   as the manual export minus trailing export-metadata columns),
-  `data/pine/pine_subschemes.csv`, raw TSV, `pine_etl_metadata.json`.
+  `data/pine/pine_subschemes.csv`, the raw export (`pine_*_raw.csv`),
+  `pine_etl_metadata.json`. The raw export was tab-separated until August
+  2026 and is now comma-separated with a UTF-8 BOM; the loader sniffs the
+  delimiter, so either works. The same redeploy changed the export schema:
+  empty cells are now written as `...` (the loader maps them to null) and
+  the `Intervention`, `LinksOther`, `Package` and `PolicyInstrument_*` /
+  `PolicyDetails_*` columns were dropped, so `contextoradditionalinfo` and
+  `url` are null for PINE rows fetched after August 2026.
 - Run alone: `.venv-fetch/bin/python3 fetch_pine_data.py --output_dir data/pine`
 - Fragility note: this depends on the Shiny wire protocol and the app's
-  internal handler names (`downloadcsv4`); if OECD redeploys the app the
-  fetcher may need updating. It validates required columns and a minimum
-  row count (`--min_rows`, default 1000) and fails loudly otherwise.
+  internal handler names; if OECD redeploys the app the fetcher may need
+  updating. It validates required columns and a minimum row count
+  (`--min_rows`, default 1000) and fails loudly otherwise.
+- Redeploy playbook (last needed 27 August 2026, when the app was
+  modularised and every id gained a namespace prefix): fetch the app page
+  (`curl -sL https://pinedatabase.oecd.org/`), grep it for `downloadcsv`
+  to find the current handler ids and for the neighbouring `select`/radio
+  inputs, then update `SUBSCHEME_NS`, `ERTR_NS` and `DOWNLOAD_INPUTS` in
+  `src/pipeline/pine_etl.py`. Failure signature: `Server did not register
+  download handler(s)`.
 
 ## GIFNA (WHO) — automation: PARTIAL (record level is manual)
 
