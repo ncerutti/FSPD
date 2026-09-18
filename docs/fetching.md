@@ -24,8 +24,12 @@ source failed — suitable for a scheduled GitHub Actions job.
 > skip machinery (for the dead API's truncation and "poison record" bugs) is
 > gone.
 
-- Backend: `https://fao-fapda-api-866794018434.europe-west1.run.app`
-  (publicly reachable Cloud Run host powering `https://fapda.apps.fao.org/`).
+- Backend: `https://fapda.apps.fao.org` (same-origin; the site proxies to
+  its Cloud Run API). Until September 2026 the fetcher hit the Cloud Run host
+  directly (`fao-fapda-api-866794018434.europe-west1.run.app`); FAO removed
+  that host around 9 September 2026 (404 on every path), which broke the
+  weekly runs of 9 and 16 September. Endpoint paths were unchanged. Override
+  with `--base_url` if it moves again.
 - Endpoints (one request = the whole dataset; no pagination):
   - `POST {host}/api/v1/tool/policy-decision/download`
   - `POST {host}/api/v1/tool/policy-framework/download`

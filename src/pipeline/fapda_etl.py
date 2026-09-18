@@ -25,7 +25,7 @@ import requests
 
 
 # Google Cloud Run backend that powers https://fapda.apps.fao.org/
-DEFAULT_BASE_URL = "https://fao-fapda-api-866794018434.europe-west1.run.app"
+DEFAULT_BASE_URL = "https://fapda.apps.fao.org"
 DEFAULT_OUTPUT_DIR = Path("data/fapda")
 
 # Headers the website sends; the backend is CORS-scoped to the FAPDA origin.
