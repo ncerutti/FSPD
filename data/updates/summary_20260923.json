@@ -1,0 +1,41 @@
+{
+  "run_date": "2026-09-23",
+  "existing_dataset": "/home/runner/work/FSPD/FSPD/data/FSPD_new.parquet",
+  "existing_rows": 48259,
+  "sources": {
+    "FAPDA_decisions": {
+      "fetched": 30088,
+      "within_batch_duplicates": 0,
+      "already_in_dataset": 29899,
+      "new": 189
+    },
+    "FAPDA_F": {
+      "fetched": 13913,
+      "within_batch_duplicates": 0,
+      "already_in_dataset": 13905,
+      "new": 8
+    },
+    "PINE": {
+      "fetched": 669,
+      "within_batch_duplicates": 0,
+      "already_in_dataset": 669,
+      "new": 0
+    },
+    "GIFNA": {
+      "skipped": "no input path given"
+    }
+  },
+  "new_rows_total": 197,
+  "new_rows_file": "/home/runner/work/FSPD/FSPD/data/updates/new_rows_20260923.parquet",
+  "new_rows_csv": "/home/runner/work/FSPD/FSPD/data/updates/new_rows_20260923.csv",
+  "output": "/home/runner/work/FSPD/FSPD/data/FSPD_new.parquet",
+  "output_rows": 48456,
+  "gifna_freshness": {
+    "map_data_file": "/home/runner/work/FSPD/FSPD/data/gifna/gifna_map_data_records.jsonl",
+    "map_action_total": 4038,
+    "dataset_gifna_rows": 3731,
+    "refresh_recommended": false,
+    "note": "GIFNA map action total is consistent with the dataset \u2014 manual export likely current",
+    "expected_actions_at_current_rows": 4038
+  }
+}
